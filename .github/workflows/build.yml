@@ -1,0 +1,256 @@
+name: Google Messages Build
+
+on:
+  push:
+    branches: [google-messages]
+    tags: ['gm-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_CREATE: flutter create --platforms=windows,macos --org com.chowonki --project-name google_messages .
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: ${{ env.FLUTTER_CREATE }}
+      - run: flutter pub get
+      - run: flutter analyze --no-fatal-infos --no-fatal-warnings lib
+
+  windows:
+    # [no-release] 커밋은 코드 검사만 하고 빌드는 건너뛴다 (Actions 사용량 절약)
+    if: ${{ !contains(github.event.head_commit.message, '[no-release]') }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Scaffold platform folders (기존 파일 유지)
+        run: ${{ env.FLUTTER_CREATE }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - name: Build gmbridge.dll (libgm)
+        shell: bash
+        working-directory: native/gmbridge
+        env:
+          CGO_ENABLED: 1
+        run: |
+          go version
+          go get go.mau.fi/mautrix-gmessages@105163a43ebe81bdec5f313c13ca213d89f45e5e
+          go mod tidy
+          go build -buildmode=c-shared -ldflags "-s -w -extldflags=-static" -o gmbridge.dll .
+          ls -la gmbridge.dll
+      - name: Set window/product name
+        shell: pwsh
+        run: |
+          $rc = 'windows/runner/Runner.rc'
+          (Get-Content $rc -Raw) -replace '"FileDescription", "google_messages"', '"FileDescription", "Google Messages"' `
+                                 -replace '"ProductName", "google_messages"', '"ProductName", "Google Messages"' | Set-Content $rc -Encoding utf8
+          $mc = 'windows/runner/main.cpp'
+          (Get-Content $mc -Raw) -replace 'L"google_messages"', 'L"Google Messages"' | Set-Content $mc -Encoding utf8
+      - run: flutter pub get
+      - name: Build windows (MSVC 14.5x coroutine fix)
+        env:
+          CL: /D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS
+        run: |
+          (Get-Content windows/CMakeLists.txt -Raw) -replace '(project\([^\)]*\))', "`$1`nadd_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)" | Set-Content windows/CMakeLists.txt
+          flutter build windows --release
+          Copy-Item native/gmbridge/gmbridge.dll build/windows/x64/runner/Release/
+      - name: Smoke test (앱 실행 → 브리지 로드 확인)
+        shell: pwsh
+        run: |
+          $exe = "build/windows/x64/runner/Release/google_messages.exe"
+          if (-not (Test-Path "build/windows/x64/runner/Release/gmbridge.dll")) { throw "gmbridge.dll missing" }
+          $p = Start-Process $exe -PassThru
+          Start-Sleep -Seconds 20
+          $log = Get-ChildItem -Path $env:APPDATA -Recurse -Filter gmbridge.log -ErrorAction SilentlyContinue | Select-Object -First 1
+          $alive = -not $p.HasExited
+          if ($alive) { Stop-Process -Id $p.Id -Force }
+          Write-Host "alive=$alive log=$($log.FullName)"
+          Get-ChildItem -Path $env:APPDATA -Recurse -Filter startup.log -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName; Get-Content $_.FullName }
+          if (-not $alive) { throw "app exited early (code $($p.ExitCode))" }
+          if (-not $log) { throw "bridge did not start (gmbridge.log not found)" }
+      - name: Screenshots (데모 데이터, 화면 확인용)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force } catch { Write-Host $_ }
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          function Shot($name) {
+            $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+            $bmp.Save("shots/$name.png"); $g.Dispose(); $bmp.Dispose()
+          }
+          New-Item -ItemType Directory -Force shots | Out-Null
+          $exe = "build/windows/x64/runner/Release/google_messages.exe"
+          $prefs = Join-Path $env:APPDATA 'com.chowonki\Google Messages\shared_preferences.json'
+          foreach ($mode in @(@{n='light'; t=1}, @{n='dark'; t=2})) {
+            Get-Process google_messages -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep 1
+            New-Item -ItemType Directory -Force (Split-Path $prefs) | Out-Null
+            "{`"flutter.theme`":$($mode.t)}" | Set-Content $prefs -Encoding utf8
+            $env:GM_DEMO = '1'
+            $p = Start-Process $exe -PassThru
+            Start-Sleep 12
+            Shot $mode.n
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          }
+          # 접힌(목록만) 화면
+          "{`"flutter.theme`":1}" | Set-Content $prefs -Encoding utf8
+          $env:GM_DEMO = 'list'
+          $p = Start-Process $exe -PassThru
+          Start-Sleep 12
+          Shot 'collapsed'
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          # 접힌 창에서 대화창만 보이는 화면
+          $env:GM_DEMO = 'chat'
+          $p = Start-Process $exe -PassThru
+          Start-Sleep 12
+          Shot 'compact_chat'
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          $env:GM_DEMO = $null
+          Remove-Item $prefs -ErrorAction SilentlyContinue
+      - name: Push screenshots to gm-screenshots branch
+        shell: bash
+        continue-on-error: true
+        run: |
+          mkdir -p /tmp/shotrepo && cp shots/*.png /tmp/shotrepo/ && cd /tmp/shotrepo
+          git init -q -b gm-screenshots
+          git config user.name "github-actions" && git config user.email "actions@users.noreply.github.com"
+          git add . && git commit -qm "screenshots for ${GITHUB_SHA}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" gm-screenshots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots
+          path: shots/*.png
+          if-no-files-found: ignore
+      - name: Version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/gm-v* ]]; then echo "v=${GITHUB_REF_NAME#gm-v}" >> $GITHUB_OUTPUT;
+          else echo "v=$(grep '^version:' pubspec.yaml | sed 's/version: *//; s/+.*//')" >> $GITHUB_OUTPUT; fi
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+      - name: Build installer
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.ver.outputs.v }}" installer\windows.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.exe
+
+  macos:
+    # [no-release] 커밋은 코드 검사만 하고 빌드는 건너뛴다 (Actions 사용량 절약)
+    if: ${{ !contains(github.event.head_commit.message, '[no-release]') }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Scaffold platform folders (기존 파일 유지)
+        run: ${{ env.FLUTTER_CREATE }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - name: Build libgmbridge.dylib (universal)
+        working-directory: native/gmbridge
+        env:
+          CGO_ENABLED: 1
+          MACOSX_DEPLOYMENT_TARGET: '10.15'
+        run: |
+          go version
+          go get go.mau.fi/mautrix-gmessages@105163a43ebe81bdec5f313c13ca213d89f45e5e
+          go mod tidy
+          GOARCH=arm64 CC="clang -arch arm64" go build -buildmode=c-shared -ldflags "-s -w" -o arm64.dylib .
+          GOARCH=amd64 CC="clang -arch x86_64" go build -buildmode=c-shared -ldflags "-s -w" -o amd64.dylib .
+          lipo -create -output libgmbridge.dylib arm64.dylib amd64.dylib
+          install_name_tool -id @rpath/libgmbridge.dylib libgmbridge.dylib
+          lipo -info libgmbridge.dylib
+      - name: Free app shortcuts from the default menu (⌘, ⌘F ⌘G ⌘E ⌘J)
+        run: sed -i '' -E 's/keyEquivalent="[,fgej]"/keyEquivalent=""/g' macos/Runner/Base.lproj/MainMenu.xib
+      - run: flutter pub get
+      - run: flutter build macos --release
+      - name: Version
+        id: ver
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/gm-v* ]]; then echo "v=${GITHUB_REF_NAME#gm-v}" >> $GITHUB_OUTPUT;
+          else echo "v=$(grep '^version:' pubspec.yaml | sed 's/version: *//; s/+.*//')" >> $GITHUB_OUTPUT; fi
+      - name: DMG
+        run: |
+          APP="build/macos/Build/Products/Release/Google Messages.app"
+          cp native/gmbridge/libgmbridge.dylib "$APP/Contents/Frameworks/"
+          codesign --force --deep --sign - "$APP"
+          codesign --force --sign - --entitlements macos/Runner/Release.entitlements "$APP"
+          codesign --verify --deep --strict "$APP"
+          # Smoke test: 앱 실행 → 브리지 로드 확인
+          open "$APP"
+          sleep 20
+          LOG=$(find ~/Library/Containers ~/Library/Application\ Support -name gmbridge.log 2>/dev/null | head -1)
+          if pgrep -f "Google Messages.app" >/dev/null; then ALIVE=1; else ALIVE=0; fi
+          pkill -f "Google Messages.app" || true
+          echo "alive=$ALIVE log=$LOG"
+          [ "$ALIVE" = 1 ] || { echo "app exited early"; exit 1; }
+          [ -n "$LOG" ] || { echo "bridge did not start"; exit 1; }
+          mkdir -p dmg dist
+          cp -R "$APP" dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname "Google Messages" -srcfolder dmg -ov -format UDZO "dist/GoogleMessages-${{ steps.ver.outputs.v }}.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*.dmg
+
+  release:
+    needs: [analyze, windows, macos]
+    if: ${{ !contains(github.event.head_commit.message, '[no-release]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version
+        id: ver
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/gm-v* ]]; then echo "v=${GITHUB_REF_NAME#gm-v}" >> $GITHUB_OUTPUT;
+          else echo "v=$(grep '^version:' pubspec.yaml | sed 's/version: *//; s/+.*//')" >> $GITHUB_OUTPUT; fi
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+      - name: Release notes (CHANGELOG.md 의 해당 버전 부분)
+        run: |
+          V='${{ steps.ver.outputs.v }}'
+          echo "## 변경 내역" > notes.md
+          awk -v v="$V" '$0 == "## " v {p=1; next} /^## /{p=0} p' CHANGELOG.md >> notes.md
+          cat installer/release_footer.md >> notes.md
+          cat notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: messages-v${{ steps.ver.outputs.v }}
+          target_commitish: ${{ github.sha }}
+          name: Google 메시지 v${{ steps.ver.outputs.v }}
+          make_latest: true
+          files: |
+            out/windows/*.exe
+            out/macos/*.dmg
+          body_path: notes.md
