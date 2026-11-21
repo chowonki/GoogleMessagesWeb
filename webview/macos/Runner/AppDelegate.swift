@@ -1,6 +1,7 @@
 import Cocoa
 import FlutterMacOS
 import Vision
+import WebKit
 
 @main
 class AppDelegate: FlutterAppDelegate {
@@ -31,28 +32,54 @@ class AppDelegate: FlutterAppDelegate {
     // 새 메시지가 왔는데 창이 앞에 없으면 Dock 아이콘을 한 번 튕긴다
     let app = FlutterMethodChannel(name: "gm/app", binaryMessenger: controller.engine.binaryMessenger)
     app.setMethodCallHandler { call, result in
-      if call.method == "bounce" {
+      switch call.method {
+      case "bounce":
         NSApp.requestUserAttention(.informationalRequest)
         result(nil)
-      } else {
+      case "setHardwareAcceleration":
+        // 돌려주는 값: 설정을 적용한 WebView 개수 (아직 화면에 붙지 않았으면 0)
+        let on = call.arguments as? Bool ?? true
+        let views = NSApp.windows.compactMap(\.contentView).flatMap(AppDelegate.webViews(in:))
+        for view in views { AppDelegate.setHardwareAcceleration(on, of: view.configuration.preferences) }
+        let applied = views.first.map { "\($0.configuration.preferences.value(forKey: "acceleratedDrawingEnabled") ?? "?")" }
+        NSLog("gm: hardware acceleration %@, webviews=%d, acceleratedDrawing=%@",
+              on ? "on" : "off", views.count, applied ?? "-")
+        result(views.count)
+      default:
         result(FlutterMethodNotImplemented)
       }
     }
     let channel = FlutterMethodChannel(name: "gm/ocr", binaryMessenger: controller.engine.binaryMessenger)
     channel.setMethodCallHandler { call, result in
-      guard call.method == "recognize", let path = call.arguments as? String else {
+      guard call.method == "recognize", let data = call.arguments as? FlutterStandardTypedData else {
         result(FlutterMethodNotImplemented)
         return
       }
       DispatchQueue.global(qos: .userInitiated).async {
-        let json = AppDelegate.recognize(path: path)
+        let json = AppDelegate.recognize(data: data.data)
         DispatchQueue.main.async { result(json) }
       }
     }
   }
 
+  // ───── 하드웨어 가속 ─────
+  // WKWebView 는 GPU 를 끄는 공개 설정이 없다. WebKit 의 내부 설정 두 가지로 페이지 내용과
+  // canvas 를 CPU 로 그리게 한다(Safari 개발자 메뉴의 같은 이름 옵션과 같은 것).
+  // 화면 합성(Core Animation)은 macOS 가 늘 GPU 로 한다. 설정이 없는 macOS 에서는 아무것도 하지 않는다.
+  static func setHardwareAcceleration(_ on: Bool, of prefs: WKPreferences) {
+    for key in ["acceleratedDrawingEnabled", "canvasUsesAcceleratedDrawing"]
+    where prefs.responds(to: NSSelectorFromString("_set\(key.prefix(1).uppercased())\(key.dropFirst()):")) {
+      prefs.setValue(on, forKey: key)
+    }
+  }
+
+  static func webViews(in view: NSView) -> [WKWebView] {
+    if let web = view as? WKWebView { return [web] }
+    return view.subviews.flatMap(webViews(in:))
+  }
+
   /// {"ok":true,"w":..,"h":..,"lines":[{"words":[{"t":..,"x":..,"y":..,"w":..,"h":..}]}]}
-  static func recognize(path: String) -> String {
+  static func recognize(data: Data) -> String {
     func encode(_ obj: [String: Any]) -> String {
       let d = try? JSONSerialization.data(withJSONObject: obj)
       return String(data: d ?? Data(), encoding: .utf8) ?? "{\"ok\":false}"
@@ -60,8 +87,9 @@ class AppDelegate: FlutterAppDelegate {
     func fail(_ m: String) -> String { encode(["ok": false, "error": m]) }
 
     guard #available(macOS 10.15, *) else { return fail("macOS 10.15 이상 필요") }
-    guard let image = NSImage(contentsOfFile: path),
-          let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+    // 파일을 거치지 않고 받은 바이트에서 바로 연다
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+          let cg = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
       return fail("이미지를 열지 못했습니다")
     }
     let request = VNRecognizeTextRequest()
@@ -104,6 +132,8 @@ class AppDelegate: FlutterAppDelegate {
         if let wb = try? top.boundingBox(for: start..<end) {
           let b = wb.boundingBox
           rect = CGRect(x: b.minX, y: lineBox.minY, width: b.width, height: lineBox.height)
+          // 한 줄에 큰 글자와 작은 글자가 섞여 있으면("구매가 50만원") 낱말마다 다시 좁힌다
+          if let g = gray { rect = g.tighten(rect, minRatio: 0.3) }
         } else {
           rect = lineBox
         }
@@ -140,7 +170,7 @@ class AppDelegate: FlutterAppDelegate {
     }
 
     /// [b] 는 Vision 비율 좌표(원점 왼쪽 아래). 같은 좌표계로 좁힌 상자를 돌려준다.
-    func tighten(_ b: CGRect) -> CGRect {
+    func tighten(_ b: CGRect, minRatio: CGFloat = 0.5) -> CGRect {
       // 픽셀 행: 0 이 맨 위
       let x0 = max(0, Int(b.minX * CGFloat(w))), x1 = min(w, Int(ceil(b.maxX * CGFloat(w))))
       let pad = Int(b.height * CGFloat(h) * 0.15)
@@ -182,7 +212,7 @@ class AppDelegate: FlutterAppDelegate {
       let a = extend(seed, -1) + top, z = extend(seed, 1) + top + 1
       let newH = CGFloat(z - a) / CGFloat(h)
       // 너무 크게 바뀌면(사진 배경 탓일 수 있음) Vision 상자를 그대로 쓴다
-      if newH < b.height * 0.5 || newH > b.height * 1.3 { return b }
+      if newH < b.height * minRatio || newH > b.height * 1.3 { return b }
       return CGRect(x: b.minX, y: 1 - CGFloat(z) / CGFloat(h), width: b.width, height: newH)
     }
   }

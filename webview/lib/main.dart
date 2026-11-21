@@ -53,13 +53,26 @@ class ImageOcr {
   /// [dataUrl] 은 "data:image/png;base64,..." 형태. 실패하면 null.
   Future<Map<String, dynamic>?> recognize(String dataUrl) async {
     if (_unavailable) return null;
-    final helper = Platform.isMacOS ? '' : _helper ??= _findHelper();
+    final comma = dataUrl.indexOf(',');
+    if (comma < 0) return null;
+    if (Platform.isMacOS) {
+      // 파일을 거치지 않고 이미지 바이트를 그대로 넘긴다
+      try {
+        final json = await const MethodChannel('gm/ocr')
+            .invokeMethod<String>(
+                'recognize', base64Decode(dataUrl.substring(comma + 1)))
+            .timeout(const Duration(seconds: 20));
+        if (json == null || json.isEmpty) return null;
+        return jsonDecode(json) as Map<String, dynamic>;
+      } catch (_) {
+        return null;
+      }
+    }
+    final helper = _helper ??= _findHelper();
     if (helper == null) {
       _unavailable = true;
       return null;
     }
-    final comma = dataUrl.indexOf(',');
-    if (comma < 0) return null;
     File? file;
     try {
       final ext = dataUrl.startsWith('data:image/jpeg') ? 'jpg' : 'png';
@@ -68,13 +81,6 @@ class ImageOcr {
       file = File('${dir.path}${sep}gm_ocr_${pid}_${_seq++}.$ext');
       await file.writeAsBytes(base64Decode(dataUrl.substring(comma + 1)),
           flush: true);
-      if (Platform.isMacOS) {
-        final json = await const MethodChannel('gm/ocr')
-            .invokeMethod<String>('recognize', file.path)
-            .timeout(const Duration(seconds: 20));
-        if (json == null || json.isEmpty) return null;
-        return jsonDecode(json) as Map<String, dynamic>;
-      }
       final result = await Process.run(helper, [file.path],
               stdoutEncoding: utf8, stderrEncoding: utf8)
           .timeout(const Duration(seconds: 20));
@@ -417,12 +423,12 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
         label: '항상 위에 표시',
         checked: _alwaysOnTop,
       ),
-      if (Platform.isWindows)
-        MenuItem.checkbox(
-          key: 'hardwareAcceleration',
-          label: '하드웨어 가속 사용 (다시 시작)',
-          checked: _hardwareAcceleration,
-        ),
+      MenuItem.checkbox(
+        key: 'hardwareAcceleration',
+        // macOS 는 다시 시작하지 않고 바로 바꾼다 (페이지만 새로 불러온다)
+        label: Platform.isMacOS ? '하드웨어 가속 사용' : '하드웨어 가속 사용 (다시 시작)',
+        checked: _hardwareAcceleration,
+      ),
       MenuItem.separator(),
       MenuItem(key: 'quit', label: '종료'),
     ]));
@@ -465,10 +471,34 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
     }
   }
 
-  /// 하드웨어 가속은 WebView 를 만들 때 정해지므로, 바꾸면 앱을 다시 시작한다.
+  /// Windows: 하드웨어 가속은 WebView2 를 만들 때 정해지므로, 바꾸면 앱을 다시 시작한다.
+  /// macOS: 이미 떠 있는 WebView 에 바로 적용하고 페이지를 새로 불러온다.
   Future<void> _setHardwareAcceleration(bool on) async {
     await prefs.setBool(kHardwareAccelerationKey, on);
-    await _restart();
+    if (Platform.isMacOS) {
+      await _applyMacHardwareAcceleration(reloadAfter: true);
+      await _updateTrayMenu();
+    } else {
+      await _restart();
+    }
+  }
+
+  /// macOS: WebView 에 하드웨어 가속 설정을 넣는다(AppDelegate.swift).
+  /// WebView 가 막 만들어진 때는 아직 창에 붙지 않았을 수 있어 잠깐씩 다시 시도한다.
+  Future<void> _applyMacHardwareAcceleration({required bool reloadAfter}) async {
+    for (var i = 0; i < 20; i++) {
+      try {
+        final n = await const MethodChannel('gm/app')
+            .invokeMethod<int>('setHardwareAcceleration', _hardwareAcceleration);
+        if ((n ?? 0) > 0) {
+          if (reloadAfter) await _web?.reload();
+          return;
+        }
+      } catch (_) {
+        return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
   }
 
   /// 앱을 다시 시작한다. 새 프로세스는 이 프로세스가 끝나기를 기다렸다가 뜬다
@@ -639,8 +669,10 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
     _flash();
   }
 
+  static final _unreadInTitle = RegExp(r'^\((\d+)\+?\)');
+
   void _onTitle(String? title) {
-    final m = RegExp(r'^\((\d+)\+?\)').firstMatch(title ?? '');
+    final m = _unreadInTitle.firstMatch(title ?? '');
     final count = m == null ? 0 : int.parse(m.group(1)!);
     if (count == _unread) return;
     if (count > _unread) _flash();
@@ -779,6 +811,10 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
           ),
           onWebViewCreated: (c) {
             _web = c;
+            // 기본(켜짐)은 WebKit 기본값 그대로이므로 꺼 둔 경우에만 적용한다
+            if (Platform.isMacOS && !_hardwareAcceleration) {
+              _applyMacHardwareAcceleration(reloadAfter: true);
+            }
             c.addJavaScriptHandler(
                 handlerName: 'gmTheme', callback: _onPageChrome);
             c.addJavaScriptHandler(

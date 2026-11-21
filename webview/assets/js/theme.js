@@ -146,6 +146,7 @@
     .addEventListener('change', schedule);
   if (document.body) start();
   else document.addEventListener('DOMContentLoaded', start);
-  // 화면 전환(로그인 → 대화 목록, 설정 열기 등)은 위 신호로 다 잡히지 않는다
-  setInterval(report, 1000);
+  // 화면 전환(로그인 → 대화 목록, 설정 열기 등)은 위 신호로 다 잡히지 않는다.
+  // 창이 숨겨져 있을 때는 읽을 것이 없으니 건너뛴다 (다시 보이면 visibilitychange 로 읽는다)
+  setInterval(() => { if (!document.hidden) report(); }, 1000);
 })();

@@ -93,6 +93,7 @@
   let scheduled = false;
   const scanAll = () => {
     scheduled = false;
+    if (document.hidden) return; // 숨겨진 동안 온 변화는 다시 보일 때 한 번에 읽는다
     entries = entries.filter((x) => {
       if (x.node.isConnected) return true;
       highlight.delete(x.range);
@@ -108,6 +109,7 @@
   const start = () => {
     new MutationObserver(schedule).observe(document.body,
       { childList: true, subtree: true, characterData: true });
+    document.addEventListener('visibilitychange', schedule);
     schedule();
   };
   if (document.body) start();
@@ -220,7 +222,9 @@
       '.gm-ocr-word,.gm-ocr-text{display:inline-block;white-space:pre}' +
       '.gm-ocr-text{transform-origin:0 0}' +
       '.gm-ocr-gap{font-size:0}' +
-      '.gm-ocr-line::selection{background:rgba(26,115,232,.4);color:transparent}' +
+      '.gm-ocr-layer ::selection{background:transparent;color:transparent}' +
+      '.gm-ocr-sel{position:absolute;inset:0;pointer-events:none}' +
+      '.gm-ocr-mark{position:absolute;background:rgba(26,115,232,.38);border-radius:3px}' +
       '.gm-ocr-hit{position:absolute;pointer-events:auto;cursor:pointer;border-radius:3px;' +
       'background:rgba(26,115,232,.25);box-shadow:0 0 0 1px rgba(26,115,232,.75)}' +
       '.gm-ocr-hit:hover{background:rgba(26,115,232,.45)}');
@@ -272,6 +276,9 @@
   const buildLayer = (img, result) => {
     const layer = document.createElement('div');
     layer.className = 'gm-ocr-layer';
+    const marks = document.createElement('div');
+    marks.className = 'gm-ocr-sel';
+    layer.appendChild(marks);
     const W = result.w, H = result.h;
     for (const line of result.lines) {
       const words = line.words || [];
@@ -305,6 +312,8 @@
         }
         const box = document.createElement('span');
         box.className = 'gm-ocr-word';
+        box.dataset.y = String(w.y / H); // 선택 표시를 사진 속 글자 높이에 맞춰 그릴 때 쓴다
+        box.dataset.h = String(w.h / H);
         box.style.width = cq(w.w, W, 'cqw');
         box.style.marginLeft = cq(w.x - end, W, 'cqw');
         const t = document.createElement('span');
@@ -356,7 +365,77 @@
       const [natural, want] = sizes[i];
       if (natural > 0 && want > 0) t.style.transform = 'scaleX(' + (want / natural) + ')';
     });
+    if (layer.querySelector('.gm-ocr-mark')) drawSelection();
   };
+
+  // ───── 선택 표시 ─────
+  // 브라우저 기본 선택 표시는 겹친 글자의 줄 높이(글꼴의 위아래 여백 포함)만큼 칠해져 사진 속
+  // 글자보다 크고 아래로 처진다. 그래서 기본 표시는 감추고, 고른 낱말마다 사진 속 글자 상자
+  // 높이로 직접 칠한다. 가로 범위는 실제로 고른 글자만큼(낱말 일부도 가능)이다.
+  const drawSelection = () => {
+    const sel = window.getSelection();
+    const range = sel && sel.rangeCount && !sel.isCollapsed ? sel.getRangeAt(0) : null;
+    document.querySelectorAll('.gm-ocr-sel').forEach((marks) => {
+      const layer = marks.parentElement;
+      marks.textContent = '';
+      if (!range || !range.intersectsNode(layer)) return;
+      const lr = layer.getBoundingClientRect();
+      const lw = layer.offsetWidth, lh = layer.offsetHeight;
+      if (!lw || !lh || !lr.width) return;
+      const k = lr.width / lw; // 확대 보기에서 늘어난 배율
+      for (const line of layer.querySelectorAll('.gm-ocr-line')) {
+        if (!range.intersectsNode(line)) continue;
+        const parts = []; // [왼쪽, 오른쪽, 위, 높이] (층 안 픽셀)
+        for (const word of line.querySelectorAll('.gm-ocr-word')) {
+          const node = word.firstChild && word.firstChild.firstChild;
+          if (!node || !range.intersectsNode(node)) continue;
+          const r = document.createRange();
+          r.selectNodeContents(node);
+          if (range.compareBoundaryPoints(Range.START_TO_START, r) > 0) {
+            r.setStart(range.startContainer, range.startOffset);
+          }
+          if (range.compareBoundaryPoints(Range.END_TO_END, r) < 0) {
+            r.setEnd(range.endContainer, range.endOffset);
+          }
+          const b = r.getBoundingClientRect();
+          if (!b.width) continue;
+          parts.push([(b.left - lr.left) / k, (b.right - lr.left) / k,
+            Number(word.dataset.y) * lh, Number(word.dataset.h) * lh]);
+        }
+        // 이웃한 낱말이 비슷한 높이면 사이 빈칸까지 하나로 이어 칠한다
+        const runs = [];
+        for (const p of parts) {
+          const run = runs[runs.length - 1];
+          if (run) {
+            const overlap = Math.min(run[2] + run[3], p[2] + p[3]) - Math.max(run[2], p[2]);
+            if (overlap > 0.6 * Math.min(run[3], p[3])) {
+              const top = Math.min(run[2], p[2]);
+              run[3] = Math.max(run[2] + run[3], p[2] + p[3]) - top;
+              run[2] = top;
+              run[1] = Math.max(run[1], p[1]);
+              continue;
+            }
+          }
+          runs.push(p.slice());
+        }
+        for (const [left, right, top, height] of runs) {
+          const pad = Math.max(1, height * 0.08);
+          const m = document.createElement('div');
+          m.className = 'gm-ocr-mark';
+          m.style.left = (left - pad / 2) + 'px';
+          m.style.width = Math.max(1, right - left + pad) + 'px';
+          m.style.top = (top - pad) + 'px';
+          m.style.height = (height + pad * 2) + 'px';
+          marks.appendChild(m);
+        }
+      }
+    });
+  };
+  let selFrame = 0;
+  document.addEventListener('selectionchange', () => {
+    if (selFrame) return;
+    selFrame = requestAnimationFrame(() => { selFrame = 0; drawSelection(); });
+  });
 
   const resizeObserver = new ResizeObserver((list) => {
     for (const item of list) {
@@ -451,11 +530,16 @@
   };
   const startImages = () => {
     let pending = false;
-    new MutationObserver(() => {
+    const later = () => {
       if (pending) return;
       pending = true;
-      setTimeout(() => { pending = false; scanImages(); scanViewer(); }, 400);
-    }).observe(document.body, { childList: true, subtree: true });
+      setTimeout(() => {
+        pending = false;
+        if (!document.hidden) { scanImages(); scanViewer(); }
+      }, 400);
+    };
+    new MutationObserver(later).observe(document.body, { childList: true, subtree: true });
+    document.addEventListener('visibilitychange', later);
     scanImages();
   };
   if (document.body) startImages();
