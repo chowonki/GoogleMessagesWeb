@@ -129,6 +129,17 @@ void applyWindowFrameBrightness(bool dark) {
   }
 }
 
+/// 방금 실행된 이 프로세스가 가진 "창을 앞으로 가져올 권리"를 다른 프로세스도 쓰게 한다.
+/// 이미 실행 중인 앱이 자기 창을 앞으로 가져올 수 있도록, 두 번째로 실행된 쪽이 부른다.
+void allowForegroundHandOff() {
+  if (!Platform.isWindows) return;
+  try {
+    DynamicLibrary.open('user32.dll')
+        .lookupFunction<Int32 Function(Uint32), int Function(int)>(
+            'AllowSetForegroundWindow')(0xFFFFFFFF /* ASFW_ANY */);
+  } catch (_) {}
+}
+
 /// 창을 최대화하거나 이전 크기로 되돌린다
 Future<void> toggleMaximize() async => await windowManager.isMaximized()
     ? windowManager.unmaximize()

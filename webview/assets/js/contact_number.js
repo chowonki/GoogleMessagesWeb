@@ -143,14 +143,15 @@
     if (title) put(title, numberFor(title.querySelector('h2')));
   };
 
+  // 화면은 글자를 칠 때마다도 바뀐다: 바뀔 때마다가 아니라 잠깐 모아서 한 번만 다시 적는다
   let queued = false;
   const schedule = () => {
     if (queued) return;
     queued = true;
-    requestAnimationFrame(() => {
+    setTimeout(() => {
       queued = false;
-      apply();
-    });
+      if (!document.hidden) apply();
+    }, 120);
   };
 
   const start = () => {
@@ -164,6 +165,7 @@
       .observe(document.body, { childList: true, subtree: true, characterData: true });
     load();
     setInterval(() => { if (!document.hidden) load(); }, RELOAD_MS);
+    document.addEventListener('visibilitychange', schedule);
   };
 
   if (document.body) start();

@@ -122,50 +122,80 @@ Future<void> showMainWindow() async {
 /// 숨겨졌던 창을 다시 보인 뒤 호출된다 (작업 표시줄 단추가 새로 생기므로 배지를 다시 얹는다)
 void Function()? onMainWindowShown;
 
+/// 시작·종료가 느릴 때 어디서 시간이 가는지 보기 위한 기록.
+/// 환경 변수 GM_TRACE=1 로 실행했을 때만 임시 폴더의 gm_web_trace.log 에 쓴다.
+final bool _tracing = Platform.environment['GM_TRACE'] == '1';
+final Stopwatch _traceClock = Stopwatch()..start();
+
+void trace(String what) {
+  if (!_tracing) return;
+  try {
+    File('${Directory.systemTemp.path}${Platform.pathSeparator}gm_web_trace.log')
+        .writeAsStringSync('${_traceClock.elapsedMilliseconds} $what\n',
+            mode: FileMode.append, flush: true);
+  } catch (_) {}
+}
+
+/// 실행 중인 앱을 끝낸다 (창이 만들어진 뒤에 채워진다)
+Future<void> Function()? quitApp;
+
+/// Windows: WebView2 환경. 런타임이 없으면 [webViewAvailable] 이 false 가 된다.
+Future<void> _createWebViewEnvironment() async {
+  if (!Platform.isWindows) return;
+  try {
+    // 폴더 경로와 런타임 확인은 서로 기다릴 필요가 없다
+    final support = getApplicationSupportDirectory();
+    webViewAvailable = await WebViewEnvironment.getAvailableVersion() != null;
+    if (webViewAvailable) {
+      webViewEnvironment = await WebViewEnvironment.create(
+        settings: WebViewEnvironmentSettings(
+          userDataFolder:
+              '${(await support).path}${Platform.pathSeparator}WebView2',
+          additionalBrowserArguments: '--disable-features=UserAgentClientHint',
+        ),
+      );
+    }
+  } catch (_) {
+    webViewAvailable = false;
+  }
+  trace('webview environment ready');
+}
+
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  trace('start');
 
   if (Platform.isWindows) {
+    // 이미 실행 중이면 그쪽에 인자를 넘기고 여기서 끝난다.
+    // 창을 앞으로 가져오는 일은 실행 중인 쪽이 직접 한다(showMainWindow). 플러그인의 것은
+    // 앞에 있던 프로그램이 바쁘면 몇 초씩 멈추고 '항상 위에 표시'도 풀어 버려서 쓰지 않는다.
+    allowForegroundHandOff();
     await WindowsSingleInstance.ensureSingleInstance(
       args,
       'google_messages_web_single_instance',
-      onSecondWindow: (_) => showMainWindow(),
+      bringWindowToFront: false,
+      onSecondWindow: (args) =>
+          args.contains('--quit') ? quitApp?.call() : showMainWindow(),
     );
+    // 끝낼 앱이 없었다
+    if (args.contains('--quit')) exit(0);
   }
 
-  final support = await getApplicationSupportDirectory();
-  if (Platform.isWindows) {
-    // 기존 앱의 로그인 창과 같은 WebView2 환경 설정
-    try {
-      webViewAvailable = await WebViewEnvironment.getAvailableVersion() != null;
-      if (webViewAvailable) {
-        webViewEnvironment = await WebViewEnvironment.create(
-          settings: WebViewEnvironmentSettings(
-            userDataFolder: '${support.path}${Platform.pathSeparator}WebView2',
-            additionalBrowserArguments:
-                '--disable-features=UserAgentClientHint',
-          ),
-        );
-      }
-    } catch (_) {
-      webViewAvailable = false;
-    }
-  }
-
-  pageScripts = [
-    // 창 단추를 앱이 그릴 때만 페이지가 그 자리를 비우고 머리말의 빈 구간을 알려 준다 (theme.js)
-    if (Platform.isWindows)
-      'window.__gmCaptionWidth = ${kCaptionWidth.round()};',
-    for (final asset in kPageScriptAssets) await rootBundle.loadString(asset),
-  ];
-
-  await windowManager.ensureInitialized();
-  await localNotifier.setup(
+  // 서로 기다릴 필요가 없는 준비는 한꺼번에 시작한다.
+  // 창은 WebView 를 기다리지 않고 먼저 띄운다.
+  final webViewReady = _createWebViewEnvironment();
+  final scripts =
+      Future.wait(kPageScriptAssets.map((a) => rootBundle.loadString(a)));
+  final prefsReady = SharedPreferences.getInstance();
+  // 알림은 한참 뒤에야 쓰이므로 기다리지 않는다
+  unawaited(localNotifier.setup(
     appName: kAppName,
     shortcutPolicy: ShortcutPolicy.requireCreate,
-  );
+  ));
 
-  final prefs = await SharedPreferences.getInstance();
+  await windowManager.ensureInitialized();
+  final prefs = await prefsReady;
+  trace('prefs and window manager ready');
   final saved = _loadBounds(prefs);
   final startHidden = args.contains('--hidden');
 
@@ -191,9 +221,17 @@ Future<void> main(List<String> args) async {
       await windowManager.show();
       await windowManager.focus();
     }
+    trace('window shown');
   });
 
-  runApp(MessagesWebApp(prefs: prefs));
+  pageScripts = [
+    // 창 단추를 앱이 그릴 때만 페이지가 그 자리를 비우고 머리말의 빈 구간을 알려 준다 (theme.js)
+    if (Platform.isWindows)
+      'window.__gmCaptionWidth = ${kCaptionWidth.round()};',
+    ...await scripts,
+  ];
+  runApp(MessagesWebApp(prefs: prefs, webViewReady: webViewReady));
+  trace('runApp');
 }
 
 // ───────── Windows 시작 시 자동 실행 (현재 사용자 레지스트리 Run 키) ─────────
@@ -240,12 +278,14 @@ Rect? _loadBounds(SharedPreferences prefs) {
 }
 
 class MessagesWebApp extends StatelessWidget {
-  const MessagesWebApp({super.key, required this.prefs});
+  const MessagesWebApp(
+      {super.key, required this.prefs, required this.webViewReady});
   final SharedPreferences prefs;
+  final Future<void> webViewReady;
 
   @override
   Widget build(BuildContext context) {
-    final home = HomePage(prefs: prefs);
+    final home = HomePage(prefs: prefs, webViewReady: webViewReady);
     return ValueListenableBuilder<PageChrome>(
       valueListenable: pageChrome,
       builder: (context, colors, _) => MaterialApp(
@@ -263,8 +303,11 @@ class MessagesWebApp extends StatelessWidget {
 }
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key, required this.prefs});
+  const HomePage({super.key, required this.prefs, required this.webViewReady});
   final SharedPreferences prefs;
+
+  /// WebView 환경이 준비되면 끝난다. 그때까지는 빈 화면만 보인다.
+  final Future<void> webViewReady;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -278,6 +321,8 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
   int _badgeShown = 0;
   bool _loading = true;
   bool _maximized = false;
+  bool _webViewReady = false; // WebView 환경이 준비됐다 (webViewAvailable 이 정해졌다)
+  bool _quitting = false;
   bool _pageReady = false; // 페이지가 머리말 모습을 알려 왔다
   bool _controlsShown = false; // 창 단추를 보여 준다 (시작 화면에서는 숨긴다)
   Timer? _controlsTimer;
@@ -295,6 +340,16 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
     trayManager.addListener(this);
     _initTray();
     _showControlsAfter(_splashLimit);
+    quitApp = _quit;
+    // 종료 시간을 재기 위한 것: 정해 둔 시간(초) 뒤에 스스로 끝낸다
+    final quitAfter =
+        int.tryParse(Platform.environment['GM_TRACE_QUIT_AFTER'] ?? '');
+    if (_tracing && quitAfter != null) {
+      Timer(Duration(seconds: quitAfter), _quit);
+    }
+    widget.webViewReady.then((_) {
+      if (mounted) setState(() => _webViewReady = true);
+    });
     windowManager.isMaximized().then((v) {
       if (mounted && v != _maximized) setState(() => _maximized = v);
     });
@@ -439,13 +494,18 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
   // ───────── 창 ─────────
   Future<void> _saveBounds() async {
     final maximized = await windowManager.isMaximized();
-    await prefs.setBool('maximized', maximized);
-    if (maximized || await windowManager.isMinimized()) return;
+    if (maximized || await windowManager.isMinimized()) {
+      await prefs.setBool('maximized', maximized);
+      return;
+    }
     final b = await windowManager.getBounds();
-    await prefs.setDouble('x', b.left);
-    await prefs.setDouble('y', b.top);
-    await prefs.setDouble('w', b.width);
-    await prefs.setDouble('h', b.height);
+    await Future.wait([
+      prefs.setBool('maximized', false),
+      prefs.setDouble('x', b.left),
+      prefs.setDouble('y', b.top),
+      prefs.setDouble('w', b.width),
+      prefs.setDouble('h', b.height),
+    ]);
   }
 
   @override
@@ -477,10 +537,19 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
   }
 
   Future<void> _quit() async {
+    if (_quitting) return;
+    _quitting = true;
+    trace('quit: begin');
     await _saveBounds();
+    trace('quit: bounds saved');
+    // 눈에 보이는 것(창, 트레이 아이콘)부터 바로 치운다
+    await windowManager.hide();
     await trayManager.destroy();
-    await windowManager.setPreventClose(false);
-    await windowManager.destroy();
+    trace('quit: window hidden, tray removed');
+    // 창을 정상적으로 닫으면(windowManager.destroy) WebView 정리를 기다리느라 프로세스가
+    // 10초 넘게 남는다. 그동안은 다시 실행해도 열리지 않으므로, 저장을 마쳤으면 바로 끝낸다.
+    // (WebView2 의 브라우저 프로세스는 주인이 사라지면 스스로 정리하고 끝난다)
+    exit(0);
   }
 
   // ───────── 웹 ─────────
@@ -618,6 +687,7 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
   }
 
   Widget _content(BuildContext context) {
+    if (!_webViewReady) return const SizedBox.expand();
     if (!webViewAvailable) {
       return const Center(
         child: Padding(
