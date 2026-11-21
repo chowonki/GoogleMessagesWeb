@@ -16,6 +16,8 @@ import 'package:window_manager/window_manager.dart';
 import 'package:windows_single_instance/windows_single_instance.dart';
 import 'package:windows_taskbar/windows_taskbar.dart';
 
+import 'title_bar.dart';
+
 const String kAppName = 'Google 메시지';
 const String kHomeUrl = 'https://messages.google.com/web/';
 
@@ -96,6 +98,7 @@ final imageOcr = ImageOcr();
 
 /// 페이지에 넣는 스크립트 (assets/js). 앱을 시작할 때 한 번 읽는다.
 const List<String> kPageScriptAssets = [
+  'assets/js/theme.js',
   'assets/js/notification.js',
   'assets/js/context_menu.js',
   'assets/js/live_text.js',
@@ -104,6 +107,9 @@ List<String> pageScripts = const [];
 
 WebViewEnvironment? webViewEnvironment;
 bool webViewAvailable = true;
+
+/// 지금 페이지의 배경색. 제목 표시줄과 앱의 밝게/어둡게가 이 값을 따른다.
+late final ValueNotifier<PageColors> pageColors;
 
 Future<void> showMainWindow() async {
   if (await windowManager.isMinimized()) await windowManager.restore();
@@ -164,8 +170,13 @@ Future<void> main(List<String> args) async {
     minimumSize: const Size(420, 480),
     center: saved == null,
     title: kAppName,
+    // Windows: 제목 표시줄은 페이지 색에 맞춰 앱이 직접 그린다 (title_bar.dart)
+    titleBarStyle: Platform.isWindows ? TitleBarStyle.hidden : null,
   );
+  pageColors = ValueNotifier(PageColors.load(
+      prefs, WidgetsBinding.instance.platformDispatcher.platformBrightness));
   await windowManager.waitUntilReadyToShow(options, () async {
+    applyWindowFrameBrightness(pageColors.value.isDark);
     if (saved != null) await windowManager.setBounds(saved);
     if (prefs.getBool('maximized') ?? false) await windowManager.maximize();
     await windowManager.setPreventClose(true);
@@ -230,14 +241,19 @@ class MessagesWebApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: kAppName,
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(colorSchemeSeed: const Color(0xFF1A73E8)),
-      darkTheme: ThemeData(
-          colorSchemeSeed: const Color(0xFF1A73E8),
-          brightness: Brightness.dark),
-      home: HomePage(prefs: prefs),
+    final home = HomePage(prefs: prefs);
+    return ValueListenableBuilder<PageColors>(
+      valueListenable: pageColors,
+      builder: (context, colors, _) => MaterialApp(
+        title: kAppName,
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData(colorSchemeSeed: const Color(0xFF1A73E8)),
+        darkTheme: ThemeData(
+            colorSchemeSeed: const Color(0xFF1A73E8),
+            brightness: Brightness.dark),
+        themeMode: colors.isDark ? ThemeMode.dark : ThemeMode.light,
+        home: home,
+      ),
     );
   }
 }
@@ -257,6 +273,7 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
   int _unread = 0;
   int _badgeShown = 0;
   bool _loading = true;
+  bool _maximized = false;
   String? _loadError;
 
   SharedPreferences get prefs => widget.prefs;
@@ -270,6 +287,9 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
     onMainWindowShown = () => _applyBadge(force: true);
     trayManager.addListener(this);
     _initTray();
+    windowManager.isMaximized().then((v) {
+      if (mounted && v != _maximized) setState(() => _maximized = v);
+    });
   }
 
   @override
@@ -300,9 +320,7 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
       MenuItem.separator(),
       MenuItem.checkbox(
         key: 'closeToTray',
-        label: Platform.isMacOS
-            ? '창을 닫아도 메뉴 막대에 남기기'
-            : '닫기 버튼으로 트레이에 숨기기',
+        label: Platform.isMacOS ? '창을 닫아도 메뉴 막대에 남기기' : '닫기 버튼으로 트레이에 숨기기',
         checked: _closeToTray,
       ),
       if (Platform.isWindows)
@@ -428,10 +446,16 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
   void onWindowMoved() => _saveBounds();
 
   @override
-  void onWindowMaximize() => _saveBounds();
+  void onWindowMaximize() {
+    setState(() => _maximized = true);
+    _saveBounds();
+  }
 
   @override
-  void onWindowUnmaximize() => _saveBounds();
+  void onWindowUnmaximize() {
+    setState(() => _maximized = false);
+    _saveBounds();
+  }
 
   @override
   void onWindowClose() async {
@@ -495,145 +519,177 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
     _applyBadge();
   }
 
+  /// 페이지가 알려 준 배경색(theme.js)을 제목 표시줄·창 테두리에 반영한다
+  void _onPageColors(List<dynamic> args) {
+    if (args.length < 3 || args.any((a) => a is! num)) return;
+    Color opaque(num rgb) => Color(0xFF000000 | rgb.toInt());
+    final colors = PageColors(
+        opaque(args[0] as num), opaque(args[1] as num), (args[2] as num) + 0.0);
+    final previous = pageColors.value;
+    if (colors == previous) return;
+    pageColors.value = colors;
+    colors.save(prefs);
+    if (colors.isDark != previous.isDark) {
+      applyWindowFrameBrightness(colors.isDark);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    if (!webViewAvailable) {
-      return const Scaffold(
-        body: Center(
-          child: Padding(
-            padding: EdgeInsets.all(32),
-            child: Text(
-              'Microsoft Edge WebView2 런타임이 없어 화면을 표시할 수 없습니다.\n'
-              'WebView2 런타임을 설치한 뒤 다시 실행해 주세요.',
-              textAlign: TextAlign.center,
+    return Scaffold(
+      body: Column(
+        children: [
+          if (Platform.isWindows)
+            ValueListenableBuilder<PageColors>(
+              valueListenable: pageColors,
+              builder: (context, colors, _) => TitleBar(
+                colors: colors,
+                title: kAppName,
+                maximized: _maximized,
+              ),
             ),
+          Expanded(child: _content(context)),
+        ],
+      ),
+    );
+  }
+
+  Widget _content(BuildContext context) {
+    if (!webViewAvailable) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32),
+          child: Text(
+            'Microsoft Edge WebView2 런타임이 없어 화면을 표시할 수 없습니다.\n'
+            'WebView2 런타임을 설치한 뒤 다시 실행해 주세요.',
+            textAlign: TextAlign.center,
           ),
         ),
       );
     }
-    return Scaffold(
-      body: Stack(
-        children: [
-          InAppWebView(
-            webViewEnvironment: webViewEnvironment,
-            initialUrlRequest: URLRequest(url: WebUri(kHomeUrl)),
-            initialUserScripts: UnmodifiableListView<UserScript>([
-              for (final source in pageScripts)
-                UserScript(
-                  source: source,
-                  injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
-                ),
-            ]),
-            initialSettings: InAppWebViewSettings(
-              javaScriptEnabled: true,
-              transparentBackground: false,
-              thirdPartyCookiesEnabled: true,
-              useShouldOverrideUrlLoading: true,
-              javaScriptCanOpenWindowsAutomatically: true,
-              supportMultipleWindows: true,
-              userAgent: Platform.isMacOS ? kSafariUA : '',
-              // macOS: 트랙패드로 앞뒤 넘기기, 링크 길게 누르기 미리보기 끄기
-              allowsBackForwardNavigationGestures: false,
-              allowsLinkPreview: false,
-            ),
-            onWebViewCreated: (c) {
-              _web = c;
-              c.addJavaScriptHandler(
-                handlerName: 'gmOcr',
-                callback: (args) async {
-                  if (args.isEmpty || args[0] is! String) return null;
-                  return await imageOcr.recognize(args[0] as String);
-                },
-              );
-              c.addJavaScriptHandler(
-                handlerName: 'gmCopy',
-                callback: (args) {
-                  if (args.isNotEmpty) {
-                    Clipboard.setData(ClipboardData(text: '${args[0]}'));
-                  }
-                },
-              );
-              c.addJavaScriptHandler(
-                handlerName: 'gmNotify',
-                callback: (args) {
-                  final title = args.isNotEmpty ? '${args[0]}' : '';
-                  final body = args.length > 1 ? '${args[1]}' : '';
-                  _notify(title, body);
-                },
-              );
-            },
-            // 메시지에 들어 있는 외부 링크는 기본 브라우저로 연다
-            shouldOverrideUrlLoading: (c, action) async {
-              final url = action.request.url;
-              if (!action.isForMainFrame || _isInternal(url)) {
-                return NavigationActionPolicy.ALLOW;
-              }
-              _openExternal(url);
-              return NavigationActionPolicy.CANCEL;
-            },
-            // 새 창 요청: Google 주소는 같은 창에서, 나머지는 기본 브라우저로
-            onCreateWindow: (c, action) async {
-              final url = action.request.url;
-              if (_isInternal(url) && url != null && url.scheme == 'https') {
-                c.loadUrl(urlRequest: URLRequest(url: url));
-              } else {
-                _openExternal(url);
-              }
-              return false;
-            },
-            onPermissionRequest: (c, request) async {
-              return PermissionResponse(
-                resources: request.resources,
-                action: _isInternal(request.origin)
-                    ? PermissionResponseAction.GRANT
-                    : PermissionResponseAction.DENY,
-              );
-            },
-            onTitleChanged: (c, title) => _onTitle(title),
-            onLoadStart: (c, url) => setState(() {
-              _loading = true;
-              _loadError = null;
-            }),
-            onLoadStop: (c, url) => setState(() => _loading = false),
-            onReceivedError: (c, request, error) {
-              if (request.isForMainFrame ?? false) {
-                setState(() {
-                  _loading = false;
-                  _loadError = error.description;
-                });
-              }
-            },
+    return Stack(
+      children: [
+        InAppWebView(
+          webViewEnvironment: webViewEnvironment,
+          initialUrlRequest: URLRequest(url: WebUri(kHomeUrl)),
+          initialUserScripts: UnmodifiableListView<UserScript>([
+            for (final source in pageScripts)
+              UserScript(
+                source: source,
+                injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+              ),
+          ]),
+          initialSettings: InAppWebViewSettings(
+            javaScriptEnabled: true,
+            transparentBackground: false,
+            thirdPartyCookiesEnabled: true,
+            useShouldOverrideUrlLoading: true,
+            javaScriptCanOpenWindowsAutomatically: true,
+            supportMultipleWindows: true,
+            userAgent: Platform.isMacOS ? kSafariUA : '',
+            // macOS: 트랙패드로 앞뒤 넘기기, 링크 길게 누르기 미리보기 끄기
+            allowsBackForwardNavigationGestures: false,
+            allowsLinkPreview: false,
           ),
-          if (_loading)
-            const Align(
-              alignment: Alignment.topCenter,
-              child: LinearProgressIndicator(minHeight: 2),
-            ),
-          if (_loadError != null)
-            Positioned.fill(
-              child: ColoredBox(
-                color: Theme.of(context).colorScheme.surface,
-                child: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Text('페이지를 불러오지 못했습니다.'),
-                      const SizedBox(height: 4),
-                      Text(_loadError!,
-                          style: Theme.of(context).textTheme.bodySmall),
-                      const SizedBox(height: 16),
-                      FilledButton(
-                        onPressed: () => _web?.loadUrl(
-                            urlRequest: URLRequest(url: WebUri(kHomeUrl))),
-                        child: const Text('다시 시도'),
-                      ),
-                    ],
-                  ),
+          onWebViewCreated: (c) {
+            _web = c;
+            c.addJavaScriptHandler(
+                handlerName: 'gmTheme', callback: _onPageColors);
+            c.addJavaScriptHandler(
+              handlerName: 'gmOcr',
+              callback: (args) async {
+                if (args.isEmpty || args[0] is! String) return null;
+                return await imageOcr.recognize(args[0] as String);
+              },
+            );
+            c.addJavaScriptHandler(
+              handlerName: 'gmCopy',
+              callback: (args) {
+                if (args.isNotEmpty) {
+                  Clipboard.setData(ClipboardData(text: '${args[0]}'));
+                }
+              },
+            );
+            c.addJavaScriptHandler(
+              handlerName: 'gmNotify',
+              callback: (args) {
+                final title = args.isNotEmpty ? '${args[0]}' : '';
+                final body = args.length > 1 ? '${args[1]}' : '';
+                _notify(title, body);
+              },
+            );
+          },
+          // 메시지에 들어 있는 외부 링크는 기본 브라우저로 연다
+          shouldOverrideUrlLoading: (c, action) async {
+            final url = action.request.url;
+            if (!action.isForMainFrame || _isInternal(url)) {
+              return NavigationActionPolicy.ALLOW;
+            }
+            _openExternal(url);
+            return NavigationActionPolicy.CANCEL;
+          },
+          // 새 창 요청: Google 주소는 같은 창에서, 나머지는 기본 브라우저로
+          onCreateWindow: (c, action) async {
+            final url = action.request.url;
+            if (_isInternal(url) && url != null && url.scheme == 'https') {
+              c.loadUrl(urlRequest: URLRequest(url: url));
+            } else {
+              _openExternal(url);
+            }
+            return false;
+          },
+          onPermissionRequest: (c, request) async {
+            return PermissionResponse(
+              resources: request.resources,
+              action: _isInternal(request.origin)
+                  ? PermissionResponseAction.GRANT
+                  : PermissionResponseAction.DENY,
+            );
+          },
+          onTitleChanged: (c, title) => _onTitle(title),
+          onLoadStart: (c, url) => setState(() {
+            _loading = true;
+            _loadError = null;
+          }),
+          onLoadStop: (c, url) => setState(() => _loading = false),
+          onReceivedError: (c, request, error) {
+            if (request.isForMainFrame ?? false) {
+              setState(() {
+                _loading = false;
+                _loadError = error.description;
+              });
+            }
+          },
+        ),
+        if (_loading)
+          const Align(
+            alignment: Alignment.topCenter,
+            child: LinearProgressIndicator(minHeight: 2),
+          ),
+        if (_loadError != null)
+          Positioned.fill(
+            child: ColoredBox(
+              color: Theme.of(context).colorScheme.surface,
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('페이지를 불러오지 못했습니다.'),
+                    const SizedBox(height: 4),
+                    Text(_loadError!,
+                        style: Theme.of(context).textTheme.bodySmall),
+                    const SizedBox(height: 16),
+                    FilledButton(
+                      onPressed: () => _web?.loadUrl(
+                          urlRequest: URLRequest(url: WebUri(kHomeUrl))),
+                      child: const Text('다시 시도'),
+                    ),
+                  ],
                 ),
               ),
             ),
-        ],
-      ),
+          ),
+      ],
     );
   }
 }

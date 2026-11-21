@@ -14,18 +14,22 @@
   - 이미지 속 글자는 드래그로 선택 가능
   - 이미지 글자 인식은 Windows 내장 OCR(`Windows.Media.Ocr`), macOS 내장 Vision 으로 이 컴퓨터 안에서만 처리
 - **이미지 확대 보기**: 휠(확대/축소), 더블클릭(2.5배 ↔ 원래 크기), 끌기(이동), `+` `-` `0` 키
-- **Windows 11**: 제목 표시줄 Mica 재질, 다크 모드를 따르는 트레이 메뉴, 링크 주소 미리보기(상태 표시줄) 숨김
+- **제목 표시줄** (Windows): 앱이 직접 그려 화면과 하나로 이어지는 제목 표시줄. Google 메시지의 테마(밝게·어둡게·
+  시스템 기본값·고대비)에 맞춰 같은 색으로 바뀌고, 최소화·최대화·닫기 단추와 창 테두리도 함께 바뀜
+- **Windows 11**: 다크 모드를 따르는 트레이 메뉴, 링크 주소 미리보기(상태 표시줄) 숨김
 
 ## 구조
 
 | 경로 | 내용 |
 |---|---|
 | `lib/main.dart` | 창·트레이·알림·배지, WebView 설정, OCR 보조 프로그램 호출 |
+| `lib/title_bar.dart` | Windows 제목 표시줄(창 단추 포함), 창 테두리 밝기 |
+| `assets/js/theme.js` | 페이지 배경색 → 제목 표시줄 |
 | `assets/js/notification.js` | 웹 알림 → 앱 연결 |
 | `assets/js/context_menu.js` | 우클릭 → ⋮ 메뉴 |
 | `assets/js/live_text.js` | 라이브 텍스트, 이미지 확대 보기 |
 | `ocr/GmOcr.cs` | 이미지 글자 인식 보조 프로그램 소스 (`assets/ocr/gm_ocr.exe` 로 빌드) |
-| `windows/runner/` | Mica 제목 표시줄, 다크 모드 메뉴 |
+| `windows/runner/` | 다크 모드 메뉴 |
 | `macos/Runner/AppDelegate.swift` | 이미지 글자 인식(Vision), Dock 아이콘 다시 열기·튕김 |
 | `tools/build_macos.sh` | macOS 빌드·서명·.dmg 만들기 |
 | `../packages/flutter_inappwebview_windows` | 상태 표시줄을 끄도록 한 줄 고친 플러그인 사본 |
@@ -38,7 +42,8 @@
 # 1) OCR 보조 프로그램 (GmOcr.cs 를 고쳤을 때만. Windows SDK 필요)
 powershell -ExecutionPolicy Bypass -File ocr\build.ps1
 
-# 2) 앱 — 증분 빌드는 WebView 플러그인에서 실패하므로 매번 build\windows 를 지운다
+# 2) 앱 — 증분 빌드는 WebView 플러그인에서 실패하므로 매번 build\windows 를 지운다.
+#    저장소 경로가 길면 MSB3501 로 실패하므로, 그때는 짧은 경로(mklink /J 로 만든 연결 등)에서 빌드한다
 Remove-Item -Recurse -Force build\windows -ErrorAction SilentlyContinue
 flutter build windows --release
 

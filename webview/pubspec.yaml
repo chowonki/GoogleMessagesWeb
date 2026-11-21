@@ -1,7 +1,7 @@
 name: google_messages_web
 description: Google Messages for Web 을 WebView 로 감싼 데스크톱 앱 (Windows / macOS)
 publish_to: 'none'
-version: 1.2.0+6
+version: 1.3.0+7
 
 environment:
   sdk: ">=3.5.0 <4.0.0"
@@ -20,6 +20,7 @@ dependencies:
   path_provider: ^2.1.4
   windows_single_instance: ^1.0.1
   windows_taskbar: ^1.1.2
+  ffi: ^2.1.3
 
 # 상태 표시줄(주소 미리보기)을 끄도록 한 줄 고친 플러그인 사본
 dependency_overrides:

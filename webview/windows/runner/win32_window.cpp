@@ -212,10 +212,6 @@ Win32Window::MessageHandler(HWND hwnd,
         SetFocus(child_content_);
       }
       return 0;
-
-    case WM_DWMCOLORIZATIONCOLORCHANGED:
-      UpdateTheme(hwnd);
-      return 0;
   }
 
   return DefWindowProc(window_handle_, message, wparam, lparam);
@@ -284,14 +280,5 @@ void Win32Window::UpdateTheme(HWND const window) {
     BOOL enable_dark_mode = light_mode == 0;
     DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE,
                           &enable_dark_mode, sizeof(enable_dark_mode));
-  }
-
-  // Windows 11: Mica material on the title bar (22H2+; ignored on older builds)
-  const DWORD kSystemBackdropType = 38;  // DWMWA_SYSTEMBACKDROP_TYPE
-  int mica = 2;                          // DWMSBT_MAINWINDOW
-  if (SUCCEEDED(DwmSetWindowAttribute(window, kSystemBackdropType, &mica,
-                                      sizeof(mica)))) {
-    MARGINS margins = {-1, -1, -1, -1};
-    DwmExtendFrameIntoClientArea(window, &margins);
   }
 }
