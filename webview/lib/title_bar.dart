@@ -8,7 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
-const double kTitleBarHeight = 36;
+const double kTitleBarHeight = 30;
 
 /// 페이지 맨 위 가장자리의 배경색 (assets/js/theme.js 가 알려 준다).
 /// 왼쪽(대화 목록)과 오른쪽(대화)의 색이 다르면 [split] 에서 갈린다. 같으면 0.
@@ -103,12 +103,10 @@ class TitleBar extends StatelessWidget {
   const TitleBar({
     super.key,
     required this.colors,
-    required this.title,
     required this.maximized,
   });
 
   final PageColors colors;
-  final String title;
   final bool maximized;
 
   @override
@@ -131,29 +129,10 @@ class TitleBar extends StatelessWidget {
             ),
           Row(
             children: [
-              Expanded(
-                child: DragToMoveArea(
-                  child: Row(
-                    children: [
-                      const SizedBox(width: 12),
-                      Image.asset('assets/app_icon.png', width: 16, height: 16),
-                      const SizedBox(width: 9),
-                      Flexible(
-                        child: Text(
-                          title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: _foreground(
-                                    split > 0 ? colors.left : colors.right)
-                                .withValues(alpha: 0.8),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+              const Expanded(
+                // 앱 이름은 바로 아래 페이지 머리말에 이미 있으므로 여기에는 적지 않는다.
+                // 빈 자리는 창을 끌어 옮기는 손잡이로만 쓴다.
+                child: DragToMoveArea(child: SizedBox.expand()),
               ),
               _CaptionButton(
                 glyph: _Glyph.minimize,

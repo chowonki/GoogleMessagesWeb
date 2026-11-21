@@ -544,7 +544,6 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
               valueListenable: pageColors,
               builder: (context, colors, _) => TitleBar(
                 colors: colors,
-                title: kAppName,
                 maximized: _maximized,
               ),
             ),
