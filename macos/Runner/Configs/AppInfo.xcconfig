@@ -1,4 +1,0 @@
-// Application-level settings for the Runner target.
-PRODUCT_NAME = Google Messages
-PRODUCT_BUNDLE_IDENTIFIER = com.chowonki.googlemessages
-PRODUCT_COPYRIGHT = Copyright © 2026 chowonki. All rights reserved.

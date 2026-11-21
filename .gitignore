@@ -7,7 +7,3 @@ dist/
 pubspec.lock
 .idea/
 *.iml
-native/gmbridge/*.dll
-native/gmbridge/*.dylib
-native/gmbridge/*.h
-native/gmbridge/go.sum

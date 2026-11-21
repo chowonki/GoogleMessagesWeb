@@ -51,4 +51,4 @@ flutter build windows --release
 - 안 읽은 개수 배지는 페이지 제목의 `(3)` 같은 표기를 읽습니다.
 - 우클릭 메뉴와 라이브 텍스트는 Google 메시지 웹의 화면 구조(요소 이름)에 기대고 있어, Google 이 화면을
   바꾸면 `assets/js` 의 선택자를 고쳐야 할 수 있습니다.
-- macOS 폴더는 Flutter 기본 틀만 있고 빌드·확인하지 않았습니다.
+- Windows 전용입니다. (macOS 는 빌드·확인한 적이 없어 틀을 지웠습니다. 필요하면 `flutter create --platforms=macos .` 로 다시 만듭니다.)
