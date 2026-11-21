@@ -219,16 +219,14 @@ class _CaptionButtonState extends State<_CaptionButton>
   /// 빛의 세기 (0: 꺼짐, 1: 마우스가 올라옴). 서서히 켜지고 꺼진다.
   late final AnimationController _light = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 180),
-    reverseDuration: const Duration(milliseconds: 320),
+    duration: const Duration(milliseconds: 160),
+    reverseDuration: const Duration(milliseconds: 360),
   );
-  final _pointer = ValueNotifier<Offset>(Offset.zero);
   final _pressed = ValueNotifier<bool>(false);
 
   @override
   void dispose() {
     _light.dispose();
-    _pointer.dispose();
     _pressed.dispose();
     super.dispose();
   }
@@ -239,11 +237,7 @@ class _CaptionButtonState extends State<_CaptionButton>
       message: widget.tooltip,
       waitDuration: const Duration(milliseconds: 700),
       child: MouseRegion(
-        onEnter: (e) {
-          _pointer.value = e.localPosition;
-          _light.forward();
-        },
-        onHover: (e) => _pointer.value = e.localPosition,
+        onEnter: (_) => _light.forward(),
         onExit: (_) {
           _pressed.value = false;
           _light.reverse();
@@ -260,9 +254,9 @@ class _CaptionButtonState extends State<_CaptionButton>
             size: const Size(46, kTitleBarHeight),
             painter: _CaptionButtonPainter(
               glyph: widget.glyph,
+              dark: _isDark(widget.background),
               foreground: _foreground(widget.background),
               light: _light,
-              pointer: _pointer,
               pressed: _pressed,
             ),
           ),
@@ -272,99 +266,96 @@ class _CaptionButtonState extends State<_CaptionButton>
   }
 }
 
-/// 단추 하나를 그린다: 마우스를 따라 은은하게 번지는 빛 + 그 위의 그림
+/// 단추 하나를 그린다. 바탕은 칠하지 않고, 마우스를 올리면 아이콘 자체가 은은하게 빛난다.
 class _CaptionButtonPainter extends CustomPainter {
   _CaptionButtonPainter({
     required this.glyph,
+    required this.dark,
     required this.foreground,
     required this.light,
-    required this.pointer,
     required this.pressed,
-  }) : super(repaint: Listenable.merge([light, pointer, pressed]));
+  }) : super(repaint: Listenable.merge([light, pressed]));
 
   final _Glyph glyph;
+  final bool dark;
   final Color foreground;
   final Animation<double> light;
-  final ValueListenable<Offset> pointer;
   final ValueListenable<bool> pressed;
 
-  static const _red = Color(0xFFD93025);
-  static const _redGlow = Color(0xFFFF7A6E);
+  /// 빛의 색: 닫기는 붉은빛, 나머지는 Google 메시지의 강조색(푸른빛)
+  Color get _glow {
+    if (glyph == _Glyph.close) {
+      return dark ? const Color(0xFFFF8A80) : const Color(0xFFE53935);
+    }
+    return dark ? const Color(0xFFA8C7FA) : const Color(0xFF1A73E8);
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
     final t = Curves.easeOut.transform(light.value);
-    final isClose = glyph == _Glyph.close;
-    if (t > 0) _paintLight(canvas, size, t, isClose);
-    _paintGlyph(canvas, size,
-        isClose ? Color.lerp(foreground, Colors.white, t)! : foreground);
-  }
-
-  void _paintLight(Canvas canvas, Size size, double t, bool isClose) {
-    final rect = Offset.zero & size;
-    final down = pressed.value;
-    // 바탕: 단추 전체가 아주 옅게 밝아진다
-    final base = isClose
-        ? _red.withValues(alpha: (down ? 0.95 : 0.82) * t)
-        : foreground.withValues(alpha: (down ? 0.11 : 0.045) * t);
-    canvas.drawRect(rect, Paint()..color = base);
-    // 빛: 마우스가 있는 곳이 가장 밝고 바깥으로 갈수록 사라진다
-    final glow = isClose ? _redGlow : foreground;
-    final strength = (isClose ? 0.55 : 0.15) * t;
-    canvas.save();
-    canvas.clipRect(rect);
-    canvas.drawRect(
-      rect,
-      Paint()
-        ..shader = RadialGradient(
-          colors: [
-            glow.withValues(alpha: strength),
-            glow.withValues(alpha: strength * 0.35),
-            glow.withValues(alpha: 0),
-          ],
-          stops: const [0, 0.45, 1],
-        ).createShader(Rect.fromCircle(center: pointer.value, radius: 38)),
-    );
-    canvas.restore();
-  }
-
-  void _paintGlyph(Canvas canvas, Size size, Color color) {
-    final paint = Paint()
+    final path = _glyphPath(size);
+    Paint stroke(Color color, double width) => Paint()
       ..color = color
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1
-      ..isAntiAlias = glyph != _Glyph.minimize;
-    // 10×10 그림을 가운데에. 선이 흐려지지 않게 픽셀 가운데(.5)에 맞춘다.
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..strokeWidth = width;
+
+    if (t > 0) {
+      // 아이콘 둘레로 번지는 빛: 넓고 옅은 빛 위에 좁고 진한 빛을 겹친다
+      final strength = t * (pressed.value ? 0.6 : 1);
+      canvas.drawPath(
+        path,
+        stroke(_glow.withValues(alpha: 0.38 * strength), 5)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+      );
+      canvas.drawPath(
+        path,
+        stroke(_glow.withValues(alpha: 0.6 * strength), 2)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.6),
+      );
+    }
+    // 아이콘: 평소에는 조금 흐리게, 마우스를 올리면 빛의 색으로 또렷하게
+    final rest = foreground.withValues(alpha: 0.78);
+    canvas.drawPath(
+        path,
+        stroke(Color.lerp(rest, _glow, t)!, 1)
+          ..isAntiAlias = glyph != _Glyph.minimize);
+  }
+
+  /// 10×10 그림을 가운데에. 선이 흐려지지 않게 픽셀 가운데(.5)에 맞춘다.
+  Path _glyphPath(Size size) {
     final x = (size.width / 2).floorToDouble() - 5 + 0.5;
     final y = (size.height / 2).floorToDouble() - 5 + 0.5;
     const radius = Radius.circular(1.5);
     switch (glyph) {
       case _Glyph.minimize:
-        canvas.drawLine(Offset(x, y + 5), Offset(x + 10, y + 5), paint);
+        return Path()
+          ..moveTo(x, y + 5)
+          ..lineTo(x + 10, y + 5);
       case _Glyph.maximize:
-        canvas.drawRRect(
-            RRect.fromRectAndRadius(Rect.fromLTWH(x, y, 10, 10), radius),
-            paint);
+        return Path()
+          ..addRRect(
+              RRect.fromRectAndRadius(Rect.fromLTWH(x, y, 10, 10), radius));
       case _Glyph.restore:
-        canvas.drawRRect(
-            RRect.fromRectAndRadius(Rect.fromLTWH(x, y + 2, 8, 8), radius),
-            paint);
-        // 뒤에 겹친 창: 위쪽과 오른쪽 변만 보인다
-        canvas.drawPath(
-          Path()
-            ..moveTo(x + 2.5, y)
-            ..lineTo(x + 8.5, y)
-            ..arcToPoint(Offset(x + 10, y + 1.5), radius: radius)
-            ..lineTo(x + 10, y + 7.5),
-          paint,
-        );
+        return Path()
+          ..addRRect(
+              RRect.fromRectAndRadius(Rect.fromLTWH(x, y + 2, 8, 8), radius))
+          // 뒤에 겹친 창: 위쪽과 오른쪽 변만 보인다
+          ..moveTo(x + 2.5, y)
+          ..lineTo(x + 8.5, y)
+          ..arcToPoint(Offset(x + 10, y + 1.5), radius: radius)
+          ..lineTo(x + 10, y + 7.5);
       case _Glyph.close:
-        canvas.drawLine(Offset(x, y), Offset(x + 10, y + 10), paint);
-        canvas.drawLine(Offset(x + 10, y), Offset(x, y + 10), paint);
+        return Path()
+          ..moveTo(x, y)
+          ..lineTo(x + 10, y + 10)
+          ..moveTo(x + 10, y)
+          ..lineTo(x, y + 10);
     }
   }
 
   @override
   bool shouldRepaint(_CaptionButtonPainter old) =>
-      old.glyph != glyph || old.foreground != foreground;
+      old.glyph != glyph || old.dark != dark || old.foreground != foreground;
 }
