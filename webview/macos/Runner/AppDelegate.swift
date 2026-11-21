@@ -36,15 +36,31 @@ class AppDelegate: FlutterAppDelegate {
       case "bounce":
         NSApp.requestUserAttention(.informationalRequest)
         result(nil)
-      case "setHardwareAcceleration":
+      case "configureWebView":
         // 돌려주는 값: 설정을 적용한 WebView 개수 (아직 화면에 붙지 않았으면 0)
-        let on = call.arguments as? Bool ?? true
+        let on = (call.arguments as? [String: Any])?["hardwareAcceleration"] as? Bool ?? true
         let views = NSApp.windows.compactMap(\.contentView).flatMap(AppDelegate.webViews(in:))
-        for view in views { AppDelegate.setHardwareAcceleration(on, of: view.configuration.preferences) }
+        for view in views {
+          let prefs = view.configuration.preferences
+          AppDelegate.setDefaultFont(of: prefs)
+          AppDelegate.setHardwareAcceleration(on, of: prefs)
+        }
         let applied = views.first.map { "\($0.configuration.preferences.value(forKey: "acceleratedDrawingEnabled") ?? "?")" }
-        NSLog("gm: hardware acceleration %@, webviews=%d, acceleratedDrawing=%@",
-              on ? "on" : "off", views.count, applied ?? "-")
+        NSLog("gm: configure webview: hardware acceleration %@, webviews=%d, acceleratedDrawing=%@, font=%@",
+              on ? "on" : "off", views.count, applied ?? "-",
+              "\(views.first?.configuration.preferences.value(forKey: "standardFontFamily") ?? "-")")
         result(views.count)
+      case "setTitleBar":
+        // 제목 표시줄(창 단추가 있는 띠)을 페이지 머리말 색으로 칠하고, 글자·단추를 밝게/어둡게 맞춘다
+        guard let args = call.arguments as? [String: Any],
+              let rgb = args["color"] as? Int, let dark = args["dark"] as? Bool,
+              let window = self.mainFlutterWindow else { return result(nil) }
+        window.titlebarAppearsTransparent = true
+        window.backgroundColor = NSColor(srgbRed: CGFloat((rgb >> 16) & 0xFF) / 255,
+                                         green: CGFloat((rgb >> 8) & 0xFF) / 255,
+                                         blue: CGFloat(rgb & 0xFF) / 255, alpha: 1)
+        window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+        result(nil)
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -70,6 +86,15 @@ class AppDelegate: FlutterAppDelegate {
     for key in ["acceleratedDrawingEnabled", "canvasUsesAcceleratedDrawing"]
     where prefs.responds(to: NSSelectorFromString("_set\(key.prefix(1).uppercased())\(key.dropFirst()):")) {
       prefs.setValue(on, forKey: key)
+    }
+  }
+
+  // ───── 기본 글꼴 ─────
+  // WKWebView 의 기본 글꼴은 Times 라서, 페이지가 글꼴을 정하지 않았거나 정한 값이 무효인 곳의
+  // 한글이 명조(AppleMyungjo)로 그려진다. Safari 처럼 고딕(Apple SD Gothic Neo)을 기본으로 한다.
+  static func setDefaultFont(of prefs: WKPreferences) {
+    if prefs.responds(to: NSSelectorFromString("_setStandardFontFamily:")) {
+      prefs.setValue("Apple SD Gothic Neo", forKey: "standardFontFamily")
     }
   }
 

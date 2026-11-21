@@ -142,6 +142,18 @@ void trace(String what) {
   } catch (_) {}
 }
 
+/// macOS: 제목 표시줄(창 단추가 있는 띠)을 페이지 머리말 색과 밝게/어둡게에 맞춘다.
+/// (Windows 는 제목 표시줄 없이 창 단추를 앱이 직접 그린다: window_controls.dart)
+Future<void> applyMacTitleBar(PageChrome chrome) async {
+  if (!Platform.isMacOS) return;
+  try {
+    await const MethodChannel('gm/app').invokeMethod('setTitleBar', {
+      'color': chrome.color.toARGB32() & 0xFFFFFF,
+      'dark': chrome.isDark,
+    });
+  } catch (_) {}
+}
+
 /// 실행 중인 앱을 끝낸다 (창이 만들어진 뒤에 채워진다)
 Future<void> Function()? quitApp;
 
@@ -232,6 +244,7 @@ Future<void> main(List<String> args) async {
       prefs, WidgetsBinding.instance.platformDispatcher.platformBrightness));
   await windowManager.waitUntilReadyToShow(options, () async {
     applyWindowFrameBrightness(pageChrome.value.isDark);
+    await applyMacTitleBar(pageChrome.value);
     if (saved != null) await windowManager.setBounds(saved);
     if (prefs.getBool('maximized') ?? false) await windowManager.maximize();
     await windowManager.setPreventClose(true);
@@ -476,20 +489,21 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
   Future<void> _setHardwareAcceleration(bool on) async {
     await prefs.setBool(kHardwareAccelerationKey, on);
     if (Platform.isMacOS) {
-      await _applyMacHardwareAcceleration(reloadAfter: true);
+      await _configureMacWebView(reloadAfter: true);
       await _updateTrayMenu();
     } else {
       await _restart();
     }
   }
 
-  /// macOS: WebView 에 하드웨어 가속 설정을 넣는다(AppDelegate.swift).
+  /// macOS: WebView 에 기본 글꼴(고딕)과 하드웨어 가속 설정을 넣는다(AppDelegate.swift).
   /// WebView 가 막 만들어진 때는 아직 창에 붙지 않았을 수 있어 잠깐씩 다시 시도한다.
-  Future<void> _applyMacHardwareAcceleration({required bool reloadAfter}) async {
+  Future<void> _configureMacWebView({required bool reloadAfter}) async {
     for (var i = 0; i < 20; i++) {
       try {
-        final n = await const MethodChannel('gm/app')
-            .invokeMethod<int>('setHardwareAcceleration', _hardwareAcceleration);
+        final n = await const MethodChannel('gm/app').invokeMethod<int>(
+            'configureWebView',
+            {'hardwareAcceleration': _hardwareAcceleration});
         if ((n ?? 0) > 0) {
           if (reloadAfter) await _web?.reload();
           return;
@@ -713,6 +727,7 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
     if (chrome.isDark != previous.isDark) {
       applyWindowFrameBrightness(chrome.isDark);
     }
+    if (chrome.color != previous.color) applyMacTitleBar(chrome);
   }
 
   /// 시작 화면이 이보다 오래가면(연결이 안 될 때 등) 창 단추를 그냥 보여 준다
@@ -811,9 +826,10 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
           ),
           onWebViewCreated: (c) {
             _web = c;
-            // 기본(켜짐)은 WebKit 기본값 그대로이므로 꺼 둔 경우에만 적용한다
-            if (Platform.isMacOS && !_hardwareAcceleration) {
-              _applyMacHardwareAcceleration(reloadAfter: true);
+            // 글꼴은 바로 다시 그려진다. 하드웨어 가속은 기본(켜짐)이 WebKit 기본값 그대로이므로
+            // 꺼 둔 경우에만 페이지를 새로 불러와 처음부터 CPU 로 그리게 한다.
+            if (Platform.isMacOS) {
+              _configureMacWebView(reloadAfter: !_hardwareAcceleration);
             }
             c.addJavaScriptHandler(
                 handlerName: 'gmTheme', callback: _onPageChrome);
