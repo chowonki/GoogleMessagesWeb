@@ -235,12 +235,13 @@ final _OcrWorker _worker = _OcrWorker();
 
 /// 앱 시작 뒤 한 번 호출해 인식 엔진을 미리 띄워 둔다
 Future<void> prewarmOcr() async {
+  if (Platform.isMacOS) return _pruneOcrDiskCache();
   if (!Platform.isWindows) return;
   await _worker._ensure();
   _pruneOcrDiskCache();
 }
 
-// ── 인식 결과 보관 (Windows) ──
+// ── 인식 결과 보관 (Windows·macOS) ──
 // 사진 창은 따로 실행되는 프로그램이라 매번 인식 엔진을 새로 띄워야 한다. 그래서
 // 본 앱이 사진을 여는 순간 (이미 떠 있는 엔진으로) 먼저 인식해 결과를 파일로 남기고,
 // 사진 창은 그 파일이 있으면 바로 쓴다. 같은 사진을 다시 열 때도 즉시 나온다.
@@ -277,7 +278,7 @@ void _pruneOcrDiskCache() {
 
 /// 사진 창을 띄우기 직전에 본 앱에서 불러, 인식을 미리 해 둔다
 void precomputeOcr(String path) {
-  if (Platform.isWindows) recognizeText(path).ignore();
+  if (Platform.isWindows || Platform.isMacOS) recognizeText(path).ignore();
 }
 
 OcrResult? _parseOcr(String text) {
@@ -318,11 +319,33 @@ Future<OcrResult?> recognizeText(String path) {
 
 Future<OcrResult?> _recognize(String path) async {
   if (Platform.isMacOS) {
-    // macOS: 시스템 글자 인식(Vision)을 앱 쪽 코드로 부른다
+    // macOS: 시스템 글자 인식(Vision)을 앱 쪽 코드로 부른다.
+    // Windows 처럼 본 앱이 미리 인식해 둔 결과(파일)가 있으면 그걸 바로 쓴다.
+    final disk = _ocrDiskFile(path);
+    OcrResult? cached() {
+      try {
+        if (disk != null && disk.existsSync()) {
+          return _parseOcr(disk.readAsStringSync());
+        }
+      } catch (_) {}
+      return null;
+    }
+
     try {
+      final hit = cached();
+      if (hit != null) return hit;
       final json = await const MethodChannel('gm/ocr')
           .invokeMethod<String>('recognize', path);
-      return json == null ? null : _parseOcr(json);
+      final r = json == null ? null : _parseOcr(json);
+      if (r != null && disk != null) {
+        try {
+          disk.parent.createSync(recursive: true);
+          File('${disk.path}.$pid.tmp')
+            ..writeAsStringSync(json!, flush: true)
+            ..renameSync(disk.path);
+        } catch (_) {}
+      }
+      return r;
     } catch (e) {
       _ocrLog('vision error: $e');
       return null;
@@ -1077,6 +1100,9 @@ class _ImageViewerState extends State<ImageViewer> {
                                       style: TextStyle(fontSize: 0.01)),
                                 ]),
                                 softWrap: false,
+                                // 줄바꿈 뒤의 빈 줄까지 높이에 들어가면 글자가 칸의
+                                // 위쪽 절반에만 놓여, 선택 표시가 사진 속 글자와 어긋난다
+                                maxLines: 1,
                                 style: const TextStyle(
                                     fontSize: 20,
                                     height: 1.0,
