@@ -70,11 +70,163 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 알림 끄기/켜기. 휴대폰의 대화 알림 설정에도 함께 반영한다 (웹과 같음).
   void toggleMute(String id) {
-    if (!_muted.remove(id)) _muted.add(id);
+    final mute = !_muted.remove(id);
+    if (mute) _muted.add(id);
     prefs.setStringList('muted', _muted.toList());
     notifyListeners();
+    bridge.call('updateConversation', {
+      'convId': id,
+      'action': mute ? 'mute' : 'unmute',
+    }).catchError((_) => null);
   }
+
+  // ───────── 휴대폰 정보 (SIM · RCS) ─────────
+  /// 휴대폰의 SIM 목록: {participantId, carrier, number, color, slot, rcs}
+  List<Map<String, dynamic>> sims = const [];
+
+  /// 휴대폰의 채팅(RCS) 설정: {enabled, readReceipts, typingIndicators}
+  Map<String, dynamic> rcs = const {};
+  String phoneAppVersion = '';
+
+  /// 대화별로 직접 고른 보내는 SIM (없으면 대화의 기본 SIM)
+  late final Map<String, String> _simFor = () {
+    try {
+      return Map<String, String>.from(
+          jsonDecode(prefs.getString('simFor') ?? '{}') as Map);
+    } catch (_) {
+      return <String, String>{};
+    }
+  }();
+
+  /// 이 대화에서 보낼 때 쓸 SIM 의 participantId
+  String simIdFor(Conversation c) {
+    final chosen = _simFor[c.id];
+    if (chosen != null && sims.any((s) => s['participantId'] == chosen)) {
+      return chosen;
+    }
+    if (sims.any((s) => s['participantId'] == c.outgoingId)) {
+      return c.outgoingId;
+    }
+    return sims.isEmpty ? '' : '${sims.first['participantId']}';
+  }
+
+  void setSimFor(String convId, String simId) {
+    _simFor[convId] = simId;
+    prefs.setString('simFor', jsonEncode(_simFor));
+    notifyListeners();
+  }
+
+  static String simLabel(Map<String, dynamic> sim) {
+    final carrier = '${sim['carrier'] ?? ''}';
+    final number = '${sim['number'] ?? ''}';
+    final slot = (sim['slot'] as num?)?.toInt() ?? 0;
+    return [
+      if (slot > 0) 'SIM $slot',
+      if (carrier.isNotEmpty) carrier,
+      if (number.isNotEmpty) number,
+    ].join(' · ');
+  }
+
+  // ───────── 휴대폰 상태 알림 (웹의 알림 띠와 같음) ─────────
+  bool phoneOnMobileData = false;
+  bool phoneBatteryLow = false;
+
+  /// 다른 곳(브라우저 등)에서 메시지 웹을 열어 이 앱이 비활성화됨
+  bool sessionInactive = false;
+  bool mobileDataDismissed = false;
+  bool batteryDismissed = false;
+
+  void dismissAlert(String which) {
+    if (which == 'data') mobileDataDismissed = true;
+    if (which == 'battery') batteryDismissed = true;
+    notifyListeners();
+  }
+
+  /// "여기서 사용": 이 앱을 다시 활성 세션으로 만든다
+  Future<void> useHere() async {
+    try {
+      await bridge.call('setActive');
+      sessionInactive = false;
+      notifyListeners();
+      loadConversations();
+      final sel = selectedId;
+      if (sel != null) loadMessages(sel, refresh: true);
+    } catch (e) {
+      connMessage = e.toString();
+      notifyListeners();
+    }
+  }
+
+  void _onAlert(String alert) {
+    switch (alert) {
+      case 'MOBILE_DATA_CONNECTION':
+        phoneOnMobileData = true;
+        mobileDataDismissed = false;
+      case 'MOBILE_WIFI_CONNECTION':
+        phoneOnMobileData = false;
+      case 'MOBILE_BATTERY_LOW':
+        phoneBatteryLow = true;
+        batteryDismissed = false;
+      case 'MOBILE_BATTERY_RESTORED':
+        phoneBatteryLow = false;
+      case 'BROWSER_INACTIVE':
+      case 'BROWSER_INACTIVE_FROM_TIMEOUT':
+      case 'BROWSER_INACTIVE_FROM_INACTIVITY':
+        sessionInactive = true;
+      case 'BROWSER_ACTIVE':
+        if (sessionInactive) {
+          sessionInactive = false;
+          loadConversations();
+        }
+      default:
+        return;
+    }
+    notifyListeners();
+  }
+
+  // ───────── 입력 중 표시 보내기 (RCS 대화) ─────────
+  final Map<String, Timer> _typingStop = {};
+  final Map<String, DateTime> _typingSent = {};
+
+  /// 입력창에 글을 쓰는 동안 부른다. [stop] 이면 입력을 멈춘 것으로 알린다.
+  void userTyping(String convId, {bool stop = false}) {
+    final active = _typingStop.containsKey(convId);
+    if (stop) {
+      if (!active) return;
+      _typingStop.remove(convId)?.cancel();
+      _typingSent.remove(convId);
+      bridge.call('typing', {'convId': convId, 'typing': false}).catchError(
+          (_) => null);
+      return;
+    }
+    if (!sendTyping || connState != 'connected') return;
+    final c = convs[convId];
+    if (c == null || !c.isRcs || c.readOnly) return;
+    _typingStop[convId]?.cancel();
+    _typingStop[convId] =
+        Timer(const Duration(seconds: 6), () => userTyping(convId, stop: true));
+    final last = _typingSent[convId];
+    final now = DateTime.now();
+    if (last == null || now.difference(last).inSeconds >= 8) {
+      _typingSent[convId] = now;
+      bridge.call('typing', {'convId': convId, 'typing': true}).catchError(
+          (_) => null);
+    }
+  }
+
+  /// 내 쪽 참여자 번호들 (공감을 내가 눌렀는지 가릴 때 쓴다)
+  Set<String> myIds(Conversation c) => {
+        if (c.outgoingId.isNotEmpty) c.outgoingId,
+        for (final p in c.participants)
+          if (p.isMe) p.id,
+        for (final s in sims) '${s['participantId']}',
+      };
+
+  Future<void> renameGroup(String convId, String name) =>
+      bridge.call('updateConversation',
+          {'convId': convId, 'action': 'rename', 'name': name});
 
   /// 대화 목록에서 위(-1)/아래(+1) 대화로 이동
   void moveSelection(int delta) {
@@ -124,6 +276,41 @@ class AppState extends ChangeNotifier {
       await File(source).copy(dest);
       await prefs.setString('soundPath', dest);
     }
+    notifyListeners();
+  }
+
+  /// 새 메시지 알림 때 소리 재생
+  bool get notifySound => prefs.getBool('notifySound') ?? true;
+  set notifySound(bool v) {
+    prefs.setBool('notifySound', v);
+    notifyListeners();
+  }
+
+  /// 휴대폰이 모바일 데이터를 쓰고 있을 때 알려 주기
+  bool get dataAlert => prefs.getBool('dataAlert') ?? true;
+  set dataAlert(bool v) {
+    prefs.setBool('dataAlert', v);
+    notifyListeners();
+  }
+
+  /// 휴대폰 배터리가 부족할 때 알려 주기
+  bool get batteryAlert => prefs.getBool('batteryAlert') ?? true;
+  set batteryAlert(bool v) {
+    prefs.setBool('batteryAlert', v);
+    notifyListeners();
+  }
+
+  /// 고대비 모드 (글자·경계선을 더 진하게)
+  bool get highContrast => prefs.getBool('highContrast') ?? false;
+  set highContrast(bool v) {
+    prefs.setBool('highContrast', v);
+    notifyListeners();
+  }
+
+  /// RCS 대화에서 내가 입력 중임을 상대에게 알리기
+  bool get sendTyping => prefs.getBool('sendTyping') ?? true;
+  set sendTyping(bool v) {
+    prefs.setBool('sendTyping', v);
     notifyListeners();
   }
 
@@ -332,6 +519,17 @@ class AppState extends ChangeNotifier {
             e['isOld'] == true);
       case 'settings':
         _rememberPhoneNumber(e['sims']);
+        if (e['sims'] is List) {
+          sims = [
+            for (final sim in e['sims'] as List)
+              if (sim is Map) Map<String, dynamic>.from(sim)
+          ];
+        }
+        if (e['rcs'] is Map) rcs = Map<String, dynamic>.from(e['rcs'] as Map);
+        phoneAppVersion = (e['phoneAppVersion'] ?? '').toString();
+        notifyListeners();
+      case 'alert':
+        _onAlert((e['alert'] ?? '').toString());
       case 'typing':
         final id = (e['convId'] ?? '').toString();
         if (e['typing'] == true) {
@@ -370,6 +568,11 @@ class AppState extends ChangeNotifier {
     _avatarRequested.clear();
     selectedId = null;
     connState = 'connecting';
+    sims = const [];
+    rcs = const {};
+    phoneOnMobileData = false;
+    phoneBatteryLow = false;
+    sessionInactive = false;
   }
 
   // ───────── 로그인 ─────────
@@ -555,8 +758,12 @@ class AppState extends ChangeNotifier {
     _afterConvChange();
   }
 
-  Future<Conversation> startConversation(List<String> numbers) async {
-    final res = await bridge.call('startConversation', {'numbers': numbers});
+  Future<Conversation> startConversation(List<String> numbers,
+      {String groupName = ''}) async {
+    final res = await bridge.call('startConversation', {
+      'numbers': numbers,
+      if (groupName.trim().isNotEmpty) 'groupName': groupName.trim(),
+    });
     final c = Conversation.fromJson(Map<String, dynamic>.from(res as Map));
     _upsertConv(c);
     notifyListeners();
@@ -836,11 +1043,14 @@ class AppState extends ChangeNotifier {
       c.previewFromMe = true;
     }
     notifyListeners();
+    userTyping(convId, stop: true);
+    final simId = c != null && sims.length > 1 ? simIdFor(c) : '';
     try {
       await bridge.call('send', {
         'convId': convId,
         'tmpId': tmpId,
         'text': text,
+        if (simId.isNotEmpty) 'simId': simId,
         if (path != null) 'path': path,
         if (mime != null) 'mime': mime,
         if (replyTo != null) 'replyTo': replyTo,

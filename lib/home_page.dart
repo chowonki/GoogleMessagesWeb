@@ -142,16 +142,40 @@ Future<void> _conversationMenu(
       if (number.isNotEmpty) _mi('copyNumber', Icons.copy_rounded, '전화번호 복사'),
       if (conv.title.isNotEmpty && conv.title != number)
         _mi('copyName', Icons.badge_outlined, '이름 복사'),
+      _mi('details', Icons.info_outline_rounded, '세부정보'),
       const PopupMenuDivider(),
       if (conv.folder != 'spam')
         _mi(archived ? 'unarchive' : 'archive',
             archived ? Icons.unarchive_outlined : Icons.archive_outlined,
             archived ? '보관 해제' : '보관'),
+      if (conv.folder == 'spam')
+        _mi('unblock', Icons.check_circle_outline_rounded, '차단 해제 (스팸 아님)')
+      else if (!conv.isGroup) ...[
+        _mi('block', Icons.block_rounded, '차단'),
+        _mi('spam', Icons.report_gmailerrorred_rounded, '차단 및 스팸 신고'),
+      ],
       _mi('delete', Icons.delete_outline_rounded, '대화 삭제', danger: true),
     ],
   );
   if (v == null || !context.mounted) return;
+  await _conversationAction(context, state, conv, v);
+}
+
+/// 대화에 대한 동작 실행 (우클릭 메뉴·세부정보 창 공용)
+Future<void> _conversationAction(
+    BuildContext context, AppState state, Conversation conv, String v) async {
+  final peer = conv.peer;
+  final number = peer != null
+      ? (peer.formatted.isNotEmpty ? peer.formatted : peer.number)
+      : '';
   switch (v) {
+    case 'details':
+      // 대화를 열고 그 자리에 대화 상대 정보 화면을 펼친다
+      state.select(conv.id);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_activeChat?.conv.id == conv.id) _activeChat?.openInfo();
+      });
+      return;
     case 'open':
       return state.select(conv.id);
     case 'search':
@@ -189,11 +213,449 @@ Future<void> _conversationMenu(
     );
     if (ok != true) return;
   }
+  if (v == 'block' || v == 'spam') {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(v == 'spam' ? '차단하고 스팸으로 신고할까요?' : '차단할까요?'),
+        content: Text(v == 'spam'
+            ? '"${conv.title}"의 메시지를 더 이상 받지 않고, 대화가 스팸 및 차단 폴더로 이동합니다. '
+                '최근 메시지가 Google(및 이동통신사)에 스팸으로 신고됩니다.'
+            : '"${conv.title}"의 메시지를 더 이상 받지 않고, 대화가 스팸 및 차단 폴더로 이동합니다.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('취소')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(v == 'spam' ? '차단 및 신고' : '차단')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+  }
   try {
     await state.updateConversation(conv.id, v);
+    if (!context.mounted) return;
+    if (v == 'block' || v == 'spam') _toast(context, '차단했습니다');
+    if (v == 'unblock') _toast(context, '차단을 해제했습니다');
   } catch (e) {
     if (context.mounted) _toast(context, '실패: $e');
   }
+}
+
+/// 대화 상대 정보 화면: 대화창 자리에 통째로 펼쳐진다 (뒤로 가기로 대화로 돌아감).
+/// 상대 이름·번호, 빠른 동작, 참여자, 주고받은 사진, 대화 관리 항목을 보여 준다.
+class _ContactInfoPane extends StatelessWidget {
+  const _ContactInfoPane({
+    required this.state,
+    required this.conv,
+    required this.onBack,
+    required this.onSearch,
+  });
+  final AppState state;
+  final Conversation conv;
+  final VoidCallback onBack;
+  final VoidCallback onSearch;
+
+  static String _numberOf(Participant p) =>
+      p.formatted.isNotEmpty ? p.formatted : p.number;
+
+  Future<void> _copy(BuildContext context, String text, String done) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (context.mounted) _toast(context, done);
+  }
+
+  Widget _action(BuildContext context, IconData icon, String label,
+      VoidCallback onTap,
+      {bool active = false}) {
+    final c = Theme.of(context).colorScheme;
+    return SizedBox(
+      width: 76,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: active ? c.primary : c.surfaceContainerHighest,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(icon,
+                    size: 21, color: active ? c.onPrimary : c.onSurface),
+              ),
+              const SizedBox(height: 6),
+              Text(label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 12, color: c.onSurfaceVariant)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _card(BuildContext context, {String? label, required List<Widget> children}) {
+    final c = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (label != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 14, 14, 6),
+            child: Text(label,
+                style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    color: c.onSurfaceVariant)),
+          )
+        else
+          const SizedBox(height: 12),
+        Container(
+          width: double.infinity,
+          clipBehavior: Clip.antiAlias,
+          decoration: BoxDecoration(
+            color: c.surfaceContainerHighest.withValues(alpha: 0.55),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Column(children: children),
+        ),
+      ],
+    );
+  }
+
+  Widget _row(BuildContext context, IconData icon, String title,
+      {String? subtitle, Widget? trailing, VoidCallback? onTap, bool danger = false}) {
+    final c = Theme.of(context).colorScheme;
+    final fg = danger ? c.error : c.onSurface;
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: danger ? c.error : c.onSurfaceVariant),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: TextStyle(fontSize: 14, color: fg)),
+                  if (subtitle != null && subtitle.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(subtitle,
+                          style: TextStyle(
+                              fontSize: 12, color: c.onSurfaceVariant)),
+                    ),
+                ],
+              ),
+            ),
+            if (trailing != null) trailing,
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = Theme.of(context).colorScheme;
+    final people = conv.others;
+    final peer = conv.peer;
+    final number = peer != null ? _numberOf(peer) : '';
+    final muted = state.isMuted(conv.id);
+    final pinned = state.isPinned(conv);
+    final archived = conv.folder == 'archive';
+    final blocked = conv.folder == 'spam';
+    // 주고받은 사진 (지금까지 불러온 메시지 기준, 최근 것부터)
+    final chat = state.chats[conv.id];
+    final photos = <MediaItem>[
+      if (chat != null)
+        for (final m in chat.messages.reversed)
+          for (final it in m.media)
+            if (it.isImage && it.downloadable) it
+    ];
+    String simText() {
+      final id = state.simIdFor(conv);
+      for (final sim in state.sims) {
+        if (sim['participantId'] == id) return AppState.simLabel(sim);
+      }
+      return '';
+    }
+
+    void act(String action) =>
+        _conversationAction(context, state, conv, action);
+
+    return Column(
+      children: [
+        // 헤더
+        Container(
+          height: 64,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          decoration: BoxDecoration(
+              border: Border(
+                  bottom: BorderSide(
+                      color: c.outlineVariant.withValues(alpha: 0.5)))),
+          child: Row(
+            children: [
+              HeaderIcon(
+                icon: Symbols.arrow_back,
+                raised: true,
+                tooltip: '대화로 돌아가기 (Esc)',
+                onTap: onBack,
+              ),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text('대화 상대 정보',
+                    style:
+                        TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(20, 24, 20, 28),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 520),
+                child: Column(
+                  children: [
+                    Avatar(state: state, conv: conv, radius: 44),
+                    const SizedBox(height: 14),
+                    SelectableText(conv.title,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            fontSize: 21, fontWeight: FontWeight.w700)),
+                    if (!conv.isGroup && number.isNotEmpty && number != conv.title)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: SelectableText(number,
+                            style: TextStyle(
+                                fontSize: 14, color: c.onSurfaceVariant)),
+                      ),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: c.secondaryContainer,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                          [
+                            conv.isRcs ? 'RCS 채팅' : '문자 메시지 (SMS/MMS)',
+                            if (conv.isGroup) '그룹 ${people.length}명',
+                            if (blocked) '차단됨',
+                          ].join(' · '),
+                          style: TextStyle(
+                              fontSize: 12, color: c.onSecondaryContainer)),
+                    ),
+                    const SizedBox(height: 16),
+                    // 빠른 동작
+                    Wrap(
+                      alignment: WrapAlignment.center,
+                      children: [
+                        _action(context, Symbols.search, '검색', onSearch),
+                        _action(
+                            context,
+                            muted
+                                ? Symbols.notifications_off
+                                : Symbols.notifications,
+                            muted ? '알림 꺼짐' : '알림',
+                            () => state.toggleMute(conv.id),
+                            active: !muted),
+                        _action(context, Symbols.push_pin,
+                            pinned ? '고정됨' : '고정',
+                            () => state.togglePin(conv.id),
+                            active: pinned),
+                        if (number.isNotEmpty)
+                          _action(context, Symbols.content_copy, '번호 복사',
+                              () => _copy(context, number, '전화번호를 복사했습니다')),
+                      ],
+                    ),
+                    // 참여자
+                    _card(context,
+                        label: conv.isGroup ? '참여자 ${people.length}명' : '연락처',
+                        children: [
+                          for (final p in people)
+                            _row(
+                              context,
+                              Symbols.person,
+                              p.display,
+                              subtitle: p.name.isNotEmpty ? _numberOf(p) : null,
+                              trailing: _numberOf(p).isEmpty
+                                  ? null
+                                  : IconButton(
+                                      tooltip: '전화번호 복사',
+                                      icon: const Icon(Symbols.content_copy,
+                                          size: 18),
+                                      onPressed: () => _copy(context,
+                                          _numberOf(p), '전화번호를 복사했습니다'),
+                                    ),
+                            ),
+                          if (state.sims.length > 1 && simText().isNotEmpty)
+                            _row(context, Symbols.sim_card, '보내는 SIM',
+                                subtitle: simText()),
+                        ]),
+                    // 주고받은 사진
+                    if (photos.isNotEmpty)
+                      _card(context, label: '사진 ${photos.length}장', children: [
+                        Padding(
+                          padding: const EdgeInsets.all(10),
+                          child: GridView.count(
+                            crossAxisCount: 4,
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            mainAxisSpacing: 6,
+                            crossAxisSpacing: 6,
+                            children: [
+                              for (final it in photos.take(12))
+                                _InfoThumb(
+                                  key: ValueKey(it.mediaId),
+                                  state: state,
+                                  item: it,
+                                  onTap: () =>
+                                      _showImageViewer(context, state, it),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ]),
+                    // 대화 관리
+                    _card(context, label: '대화 관리', children: [
+                      _row(context, Symbols.notifications, '알림',
+                          subtitle: '휴대폰의 대화 알림에도 반영됩니다',
+                          trailing: Switch(
+                            value: !muted,
+                            onChanged: (_) => state.toggleMute(conv.id),
+                          )),
+                      if (conv.isGroup && conv.isRcs && !conv.readOnly)
+                        _row(context, Symbols.edit, '그룹 이름 변경',
+                            onTap: () async {
+                          final name = await _askText(context,
+                              title: '그룹 이름', initial: conv.name);
+                          if (name == null || name.trim().isEmpty) return;
+                          try {
+                            await state.renameGroup(conv.id, name.trim());
+                            if (context.mounted) {
+                              _toast(context, '그룹 이름을 바꿨습니다');
+                            }
+                          } catch (e) {
+                            if (context.mounted) _toast(context, '실패: $e');
+                          }
+                        }),
+                      if (!blocked)
+                        _row(
+                            context,
+                            archived ? Symbols.unarchive : Symbols.archive,
+                            archived ? '보관 해제' : '보관',
+                            onTap: () =>
+                                act(archived ? 'unarchive' : 'archive')),
+                      if (blocked)
+                        _row(context, Symbols.check_circle, '차단 해제 (스팸 아님)',
+                            onTap: () => act('unblock'))
+                      else if (!conv.isGroup) ...[
+                        _row(context, Symbols.block, '차단',
+                            danger: true, onTap: () => act('block')),
+                        _row(context, Symbols.report, '차단 및 스팸 신고',
+                            danger: true, onTap: () => act('spam')),
+                      ],
+                      _row(context, Symbols.delete, '대화 삭제',
+                          danger: true, onTap: () => act('delete')),
+                    ]),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 대화 상대 정보의 사진 한 칸
+class _InfoThumb extends StatefulWidget {
+  const _InfoThumb(
+      {super.key, required this.state, required this.item, required this.onTap});
+  final AppState state;
+  final MediaItem item;
+  final VoidCallback onTap;
+
+  @override
+  State<_InfoThumb> createState() => _InfoThumbState();
+}
+
+class _InfoThumbState extends State<_InfoThumb> {
+  late final Future<String> _file = widget.state.mediaFile(widget.item);
+
+  @override
+  Widget build(BuildContext context) {
+    final c = Theme.of(context).colorScheme;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(10),
+      child: Material(
+        color: c.surfaceContainerHighest,
+        child: InkWell(
+          onTap: widget.onTap,
+          child: FutureBuilder<String>(
+            future: _file,
+            builder: (context, snap) => snap.hasData
+                ? Ink.image(
+                    image: ResizeImage(FileImage(File(snap.data!)), width: 240),
+                    fit: BoxFit.cover,
+                  )
+                : Center(
+                    child: Icon(
+                        snap.hasError
+                            ? Symbols.broken_image
+                            : Symbols.image,
+                        size: 20,
+                        color: c.onSurfaceVariant),
+                  ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 한 줄 글 입력 창 (그룹 이름 등)
+Future<String?> _askText(BuildContext context,
+    {required String title, String initial = ''}) {
+  final ctl = TextEditingController(text: initial);
+  return showDialog<String>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text(title),
+      content: SizedBox(
+        width: 320,
+        child: TextField(
+          controller: ctl,
+          autofocus: true,
+          maxLength: 100,
+          onSubmitted: (v) => Navigator.pop(ctx, v),
+          decoration: const InputDecoration(border: OutlineInputBorder()),
+        ),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(ctx), child: const Text('취소')),
+        FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctl.text),
+            child: const Text('확인')),
+      ],
+    ),
+  );
 }
 
 /// 헤더용 둥근 아이콘 버튼 — 크기·굵기·모양을 한 가지로 맞춘다.
@@ -763,16 +1225,6 @@ class _ConversationPane extends StatelessWidget {
             child: child,
           ),
         ),
-        // 새 메시지 작성: 목록 위에 떠 있는 입체 버튼
-        Positioned(
-          right: 18,
-          bottom: 90,
-          child: _ComposeFab(
-            onTap: () => showDialog<void>(
-                context: context,
-                builder: (_) => _NewChatDialog(state: state)),
-          ),
-        ),
         Positioned(
           left: 34,
           right: 34,
@@ -851,6 +1303,12 @@ class _ConversationPane extends StatelessWidget {
           padding: oneUi
               ? const EdgeInsets.fromLTRB(0, 0, 0, 10)
               : const EdgeInsets.fromLTRB(12, 0, 12, 8),
+          // 검색창 오른쪽에 새 메시지("채팅 시작") 버튼을 둔다
+          child: IntrinsicHeight(
+              child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+            Expanded(
           child: TextField(
             focusNode: _searchFocus,
             onChanged: state.setQuery,
@@ -870,9 +1328,20 @@ class _ConversationPane extends StatelessWidget {
                   EdgeInsets.symmetric(vertical: oneUi ? 13 : 8),
             ),
           ),
+            ),
+            if (oneUi) ...[
+              const SizedBox(width: 8),
+              _ComposeButton(
+                onTap: () => showDialog<void>(
+                    context: context,
+                    builder: (_) => _NewChatDialog(state: state)),
+              ),
+            ],
+          ])),
         ),
         _FilterChips(state: state),
         _ConnectionBanner(state: state),
+        _PhoneAlertBanner(state: state),
         Expanded(
           child: _wrapList(context, list.isEmpty
               ? Center(
@@ -924,7 +1393,7 @@ class _ConversationPane extends StatelessWidget {
                   },
                   child: ListView.builder(
                     padding: oneUi
-                        ? const EdgeInsets.fromLTRB(8, 8, 8, 160)
+                        ? const EdgeInsets.fromLTRB(8, 8, 8, 96)
                         : const EdgeInsets.symmetric(horizontal: 8),
                     itemCount: list.length,
                     itemBuilder: (_, i) =>
@@ -937,23 +1406,28 @@ class _ConversationPane extends StatelessWidget {
   }
 }
 
-/// 새 메시지 버튼: Google 메시지 아이콘처럼 위는 밝은 보랏빛, 아래는 파란
-/// 그라데이션에 윗면 하이라이트와 색 그림자를 얹어 입체감을 준다.
-class _ComposeFab extends StatefulWidget {
-  const _ComposeFab({required this.onTap});
+/// 새 메시지 버튼: 웹의 "채팅 시작"처럼 아이콘과 글자가 있는 납작한 알약 모양.
+/// 검색창 오른쪽에 두어 목록을 가리지 않는다.
+class _ComposeButton extends StatefulWidget {
+  const _ComposeButton({required this.onTap});
   final VoidCallback onTap;
 
   @override
-  State<_ComposeFab> createState() => _ComposeFabState();
+  State<_ComposeButton> createState() => _ComposeButtonState();
 }
 
-class _ComposeFabState extends State<_ComposeFab> {
+class _ComposeButtonState extends State<_ComposeButton> {
   bool _hover = false;
   bool _down = false;
 
   @override
   Widget build(BuildContext context) {
-    const r = BorderRadius.all(Radius.circular(16));
+    final c = Theme.of(context).colorScheme;
+    final bg = _down
+        ? Color.alphaBlend(Colors.black.withValues(alpha: 0.14), c.primary)
+        : _hover
+            ? Color.alphaBlend(Colors.white.withValues(alpha: 0.12), c.primary)
+            : c.primary;
     return Tooltip(
       message: '새 메시지 (${kMod}N)',
       child: MouseRegion(
@@ -968,84 +1442,27 @@ class _ComposeFabState extends State<_ComposeFab> {
           onTapCancel: () => setState(() => _down = false),
           onTapUp: (_) => setState(() => _down = false),
           onTap: widget.onTap,
-          child: AnimatedScale(
-            duration: const Duration(milliseconds: 140),
-            scale: _down ? 0.95 : (_hover ? 1.04 : 1.0),
-            child: Container(
-              width: 46,
-              height: 46,
-              decoration: BoxDecoration(
-                borderRadius: r,
-                gradient: const LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [Color(0xFFA9A6FF), Color(0xFF5B8DFF), Color(0xFF2F7BFF)],
-                  stops: [0.0, 0.55, 1.0],
-                ),
-                boxShadow: [
-                  // 아래로 떨어지는 색 그림자
-                  BoxShadow(
-                    color: const Color(0xFF2F6BFF)
-                        .withValues(alpha: _hover ? 0.55 : 0.42),
-                    blurRadius: _hover ? 16 : 11,
-                    offset: Offset(0, _hover ? 10 : 7),
-                  ),
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.18),
-                    blurRadius: 4,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: Stack(
-                children: [
-                  // 윗면 하이라이트
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    top: 0,
-                    height: 23,
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        borderRadius: const BorderRadius.vertical(
-                            top: Radius.circular(16)),
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [
-                            Colors.white.withValues(alpha: 0.38),
-                            Colors.white.withValues(alpha: 0.0),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                  // 가장자리 얇은 빛
-                  Positioned.fill(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        borderRadius: r,
-                        border: Border.all(
-                            color: Colors.white.withValues(alpha: 0.28),
-                            width: 1),
-                      ),
-                    ),
-                  ),
-                  const Center(
-                    child: Icon(Symbols.edit_square,
-                        size: 21,
-                        weight: 500,
-                        fill: 1,
-                        color: Colors.white,
-                        shadows: [
-                          Shadow(
-                              color: Color(0x551B3FA8),
-                              blurRadius: 6,
-                              offset: Offset(0, 2)),
-                        ]),
-                  ),
-                ],
-              ),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 120),
+            // 높이는 옆의 검색창에 맞춰 늘어난다
+            constraints: const BoxConstraints(minHeight: 40),
+            padding: const EdgeInsets.only(left: 14, right: 18),
+            decoration: BoxDecoration(
+              color: bg,
+              borderRadius: BorderRadius.circular(26),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Symbols.add_comment,
+                    size: 19, weight: 500, color: c.onPrimary),
+                const SizedBox(width: 7),
+                Text('채팅 시작',
+                    style: TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w600,
+                        color: c.onPrimary)),
+              ],
             ),
           ),
         ),
@@ -1094,10 +1511,15 @@ class _PillTabState extends State<_PillTab> {
           curve: Curves.easeOut,
           height: 48,
           decoration: BoxDecoration(
+            // 어두운 테마의 메시지 탭은 파란 원본 아이콘이 파란 배경에 묻히므로
+            // 선택 배경을 밝은 회색으로 한다
             color: on
-                ? c.primary.withValues(alpha: dark ? 0.26 : 0.13)
+                ? (dark && widget.useAppIcon
+                    ? Colors.white.withValues(alpha: 0.16)
+                    : c.primary.withValues(alpha: dark ? 0.26 : 0.13))
+                // 어두운 테마에서는 호버가 잘 보이도록 더 밝게
                 : (_hover
-                    ? c.onSurface.withValues(alpha: 0.05)
+                    ? c.onSurface.withValues(alpha: dark ? 0.10 : 0.05)
                     : Colors.transparent),
             borderRadius: BorderRadius.circular(26),
           ),
@@ -1105,10 +1527,11 @@ class _PillTabState extends State<_PillTab> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               if (widget.useAppIcon)
-                // 메시지 탭은 Google 메시지 원본 아이콘 (선택 안 됐을 땐 흐리게)
+                // 메시지 탭은 Google 메시지 원본 아이콘 (선택 안 됐을 땐 흐리게).
+                // 어두운 테마에서는 묻히지 않도록 덜 흐리게 한다.
                 AnimatedOpacity(
                   duration: const Duration(milliseconds: 180),
-                  opacity: on ? 1 : (_hover ? 0.85 : 0.55),
+                  opacity: on ? 1 : (_hover || dark ? 0.85 : 0.55),
                   child: Image.asset('assets/app_icon.png',
                       width: 21,
                       height: 21,
@@ -1235,6 +1658,78 @@ class _ConnectionBanner extends StatelessWidget {
             TextButton(onPressed: state.reconnect, child: const Text('재연결')),
         ],
       ),
+    );
+  }
+}
+
+/// 휴대폰 상태 알림 띠: 다른 곳에서 사용 중 / 모바일 데이터 사용 / 배터리 부족
+class _PhoneAlertBanner extends StatelessWidget {
+  const _PhoneAlertBanner({required this.state});
+  final AppState state;
+
+  Widget _bar(BuildContext context, IconData icon, String text,
+      {String? action, VoidCallback? onAction, VoidCallback? onClose}) {
+    final c = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      margin: oneUi
+          ? const EdgeInsets.fromLTRB(0, 0, 0, 10)
+          : const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      padding: const EdgeInsets.fromLTRB(12, 4, 4, 4),
+      decoration: BoxDecoration(
+        color: c.tertiaryContainer,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 17, color: c.onTertiaryContainer),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Text(text,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style:
+                      TextStyle(fontSize: 12.5, color: c.onTertiaryContainer)),
+            ),
+          ),
+          if (action != null)
+            TextButton(onPressed: onAction, child: Text(action)),
+          if (onClose != null)
+            IconButton(
+              tooltip: '닫기',
+              icon: Icon(Icons.close, size: 16, color: c.onTertiaryContainer),
+              onPressed: onClose,
+            ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (state.connState != 'connected') return const SizedBox.shrink();
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (state.sessionInactive)
+          _bar(context, Icons.devices_other_rounded,
+              '다른 브라우저나 기기에서 메시지 웹을 사용 중입니다. 여기서는 새 메시지가 갱신되지 않습니다.',
+              action: '여기서 사용', onAction: state.useHere),
+        if (state.batteryAlert &&
+            state.phoneBatteryLow &&
+            !state.batteryDismissed)
+          _bar(context, Icons.battery_alert_rounded,
+              '휴대폰 배터리가 부족합니다. 휴대폰이 꺼지면 메시지를 주고받을 수 없습니다.',
+              onClose: () => state.dismissAlert('battery')),
+        if (state.dataAlert &&
+            state.phoneOnMobileData &&
+            !state.mobileDataDismissed)
+          _bar(context, Icons.signal_cellular_alt_rounded,
+              '휴대폰이 모바일 데이터를 사용 중입니다. 데이터 요금이 부과될 수 있습니다.',
+              onClose: () => state.dismissAlert('data')),
+      ],
     );
   }
 }
@@ -1412,6 +1907,7 @@ class _NewChatDialog extends StatefulWidget {
 class _NewChatDialogState extends State<_NewChatDialog> {
   List<Map<String, dynamic>>? _contacts;
   final _field = TextEditingController();
+  final _groupName = TextEditingController();
   final List<Map<String, String>> _picked = []; // {name, number}
   String _q = '';
   bool _busy = false;
@@ -1431,6 +1927,7 @@ class _NewChatDialogState extends State<_NewChatDialog> {
   @override
   void dispose() {
     _field.dispose();
+    _groupName.dispose();
     super.dispose();
   }
 
@@ -1453,7 +1950,8 @@ class _NewChatDialogState extends State<_NewChatDialog> {
     });
     try {
       final conv = await widget.state
-          .startConversation(_picked.map((p) => p['number']!).toList());
+          .startConversation(_picked.map((p) => p['number']!).toList(),
+              groupName: _picked.length > 1 ? _groupName.text : '');
       widget.state.select(conv.id);
       if (mounted) Navigator.pop(context);
     } catch (e) {
@@ -1527,6 +2025,22 @@ class _NewChatDialogState extends State<_NewChatDialog> {
                 prefixIcon: Icon(Icons.search),
               ),
             ),
+            if (_picked.length > 1)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: TextField(
+                  controller: _groupName,
+                  enabled: !_busy,
+                  maxLength: 100,
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                    counterText: '',
+                    hintText: '그룹 이름 (선택 · RCS 그룹 채팅에만 적용)',
+                    prefixIcon: Icon(Icons.group_outlined),
+                  ),
+                ),
+              ),
             if (_error != null)
               Padding(
                 padding: const EdgeInsets.only(top: 8),
@@ -1607,6 +2121,7 @@ class _ChatPaneState extends State<ChatPane> {
   List<String> get _files =>
       s.draftFiles.putIfAbsent(conv.id, () => <String>[]);
   Message? _replyTo;
+  bool _info = false;
   bool _searching = false;
   bool _dragging = false;
   String _searchQ = '';
@@ -1619,6 +2134,10 @@ class _ChatPaneState extends State<ChatPane> {
 
   /// Esc: 검색 → 답장 → 첨부 순으로 취소. 처리했으면 true
   bool escape() {
+    if (_info) {
+      closeInfo();
+      return true;
+    }
     if (_searching) {
       setState(() {
         _searching = false;
@@ -1635,6 +2154,19 @@ class _ChatPaneState extends State<ChatPane> {
       return true;
     }
     return false;
+  }
+
+  /// 대화 상대 정보 화면 열기·닫기
+  void openInfo() {
+    if (!_info) setState(() => _info = true);
+  }
+
+  void closeInfo() {
+    if (!_info) return;
+    setState(() => _info = false);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _focus.requestFocus();
+    });
   }
 
   void toggleSearch() {
@@ -1779,6 +2311,10 @@ class _ChatPaneState extends State<ChatPane> {
     _input.text = s.drafts[conv.id] ?? '';
     _hasText = _input.text.trim().isNotEmpty;
     _input.addListener(() {
+      // 글이 바뀔 때만 상대에게 '입력 중'을 알린다 (RCS 대화, 설정에서 끌 수 있음)
+      if (_input.text != (s.drafts[conv.id] ?? '')) {
+        s.userTyping(conv.id, stop: _input.text.trim().isEmpty);
+      }
       s.drafts[conv.id] = _input.text;
       // 보낼 글이 생기거나 없어질 때만 다시 그린다 (보내기 버튼 표시)
       final has = _input.text.trim().isNotEmpty;
@@ -1793,6 +2329,7 @@ class _ChatPaneState extends State<ChatPane> {
   @override
   void dispose() {
     if (_activeChat == this) _activeChat = null;
+    s.userTyping(conv.id, stop: true);
     _input.dispose();
     _clipWatch?.cancel();
     _focus.dispose();
@@ -1914,7 +2451,23 @@ class _ChatPaneState extends State<ChatPane> {
             .where((m) => m.text.toLowerCase().contains(sq))
             .toList()
         : chat.messages;
+    // 입력 칸 한 줄 높이 (글씨 크기 설정에 따라 달라진다). 옆·안의 버튼을 이 높이에
+    // 맞춰야 글씨를 키워도 입력 칸과 아이콘이 어긋나지 않는다.
+    final fieldMin =
+        MediaQuery.textScalerOf(context).scale(13.5) * 1.4 + 24;
     final typing = s.typing[conv.id]?.isAfter(DateTime.now()) ?? false;
+    // 대화 상대 정보 화면이 열려 있으면 대화 대신 그것을 보여 준다
+    if (_info) {
+      return _ContactInfoPane(
+        state: s,
+        conv: conv,
+        onBack: closeInfo,
+        onSearch: () {
+          closeInfo();
+          if (!_searching) toggleSearch();
+        },
+      );
+    }
     return DropTarget(
       onDragEntered: (_) => setState(() => _dragging = true),
       onDragExited: (_) => setState(() => _dragging = false),
@@ -1953,6 +2506,14 @@ class _ChatPaneState extends State<ChatPane> {
                 ),
                 const SizedBox(width: 4),
               ],
+              // 사진·이름을 누르면 대화 상대 정보 화면이 열린다
+              Expanded(
+                child: MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: openInfo,
+                child: Row(children: [
               Avatar(state: s, conv: conv, radius: 19),
               const SizedBox(width: 12),
               Expanded(
@@ -1972,6 +2533,13 @@ class _ChatPaneState extends State<ChatPane> {
                               color: typing ? c.primary : c.onSurfaceVariant)),
                   ],
                 ),
+              ),
+                ])))),
+              HeaderIcon(
+                icon: Symbols.info,
+                raised: true,
+                tooltip: '대화 상대 정보',
+                onTap: openInfo,
               ),
               HeaderIcon(
                 icon: Symbols.search,
@@ -2167,54 +2735,15 @@ class _ChatPaneState extends State<ChatPane> {
                       iconSize: 21,
                       padding: EdgeInsets.zero,
                       constraints:
-                          const BoxConstraints.tightFor(width: 34, height: 44),
+                          BoxConstraints.tightFor(width: 34, height: fieldMin),
                       style: IconButton.styleFrom(
-                        minimumSize: const Size(34, 44),
+                        // 데스크톱 기본값(촘촘한 간격)이면 입력 칸·버튼 높이가 따로 줄어 어긋난다
+                        visualDensity: VisualDensity.standard,
+                        minimumSize: Size(34, fieldMin),
                         padding: EdgeInsets.zero,
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       ),
                       onPressed: _pick,
-                    ),
-                    PopupMenuButton<String>(
-                      tooltip: '이모티콘',
-                      popUpAnimationStyle: AnimationStyle(
-                          curve: Curves.easeOut,
-                          duration: const Duration(milliseconds: 150)),
-                      icon: const Icon(Icons.emoji_emotions_outlined, size: 21),
-                      padding: EdgeInsets.zero,
-                      // (여기에 constraints 를 주면 버튼이 아니라 뜨는 창 크기가 줄어든다)
-                      style: IconButton.styleFrom(
-                        minimumSize: const Size(34, 44),
-                        padding: EdgeInsets.zero,
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      ),
-                      onSelected: _insertEmoji,
-                      itemBuilder: (ctx) => [
-                        PopupMenuItem<String>(
-                          padding: const EdgeInsets.all(8),
-                          child: SizedBox(
-                            width: 264,
-                            child: Wrap(
-                              children: [
-                                for (final e in _emojiSet)
-                                  InkWell(
-                                    borderRadius: BorderRadius.circular(8),
-                                    onTap: () => Navigator.pop(ctx, e),
-                                    child: SizedBox(
-                                      width: 44,
-                                      height: 40,
-                                      child: Center(
-                                        child: Text(e,
-                                            style:
-                                                const TextStyle(fontSize: 22)),
-                                      ),
-                                    ),
-                                  ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
                     ),
                     Expanded(
                       child: Stack(
@@ -2227,64 +2756,143 @@ class _ChatPaneState extends State<ChatPane> {
                         child: TextField(
                         controller: _input,
                         focusNode: _focus,
-                        // 글씨는 조금 작게, 칸은 넉넉하게 (2줄부터 시작해 10줄까지 늘어난다)
-                        minLines: 2,
+                        // 글씨는 조금 작게 (1줄부터 시작해 10줄까지 늘어난다)
+                        minLines: 1,
                         maxLines: 10,
                         style: const TextStyle(fontSize: 13.5, height: 1.4),
                         textInputAction: TextInputAction.newline,
                         decoration: InputDecoration(
-                          hintText: '메시지 입력',
+                          // 웹처럼 보낼 방식(RCS 채팅 / 문자)을 알려 준다
+                          hintText: conv.isRcs
+                              ? 'RCS 메시지'
+                              : (conv.type == 'SMS' ? '문자 메시지' : '메시지 입력'),
                           hintStyle: TextStyle(
                               fontSize: 13.5, color: c.onSurfaceVariant),
+                          // 데스크톱 기본값(촘촘한 간격)이면 입력 칸·버튼 높이가 따로 줄어 어긋난다
+                          visualDensity: VisualDensity.standard,
                           isDense: true,
                           filled: true,
                           fillColor: c.surfaceContainerHighest,
-                          // 오른쪽은 안에 들어가는 보내기 버튼 자리
-                          contentPadding:
-                              const EdgeInsets.fromLTRB(16, 12, 48, 12),
+                          // 오른쪽은 안에 들어가는 이모티콘·SIM 버튼 자리
+                          contentPadding: EdgeInsets.fromLTRB(
+                              16, 12, s.sims.length > 1 ? 80 : 46, 12),
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(20),
                             borderSide: BorderSide.none,
                           ),
                         ),
                       )),
-                          // 보내기 버튼: 입력 칸 안 오른쪽 아래. 보낼 것이 있을 때만 나타난다
+                          // 웹처럼 이모티콘·SIM 버튼은 입력 칸 안 오른쪽 아래에 둔다
                           Positioned(
                             right: 6,
-                            bottom: 6,
-                            child: IgnorePointer(
-                              ignoring: !(_hasText || _files.isNotEmpty),
-                              child: AnimatedScale(
-                                duration: const Duration(milliseconds: 140),
-                                curve: Curves.easeOut,
-                                scale: _hasText || _files.isNotEmpty ? 1 : 0.6,
-                                child: AnimatedOpacity(
-                                  duration: const Duration(milliseconds: 140),
-                                  opacity:
-                                      _hasText || _files.isNotEmpty ? 1 : 0,
-                                  child: IconButton.filled(
-                                    tooltip: s.enterSends
-                                        ? '보내기 (Enter)'
-                                        : '보내기 (${kMod}Enter)',
-                                    icon: const Icon(Icons.arrow_upward_rounded),
-                                    iconSize: 18,
-                                    padding: EdgeInsets.zero,
-                                    constraints: const BoxConstraints.tightFor(
-                                        width: 32, height: 32),
-                                    style: IconButton.styleFrom(
-                                      minimumSize: const Size(32, 32),
-                                      fixedSize: const Size(32, 32),
-                                      padding: EdgeInsets.zero,
-                                      tapTargetSize:
-                                          MaterialTapTargetSize.shrinkWrap,
+                            bottom: 0,
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                            PopupMenuButton<String>(
+                              tooltip: '이모티콘',
+                              popUpAnimationStyle: AnimationStyle(
+                                  curve: Curves.easeOut,
+                                  duration: const Duration(milliseconds: 150)),
+                              icon: const Icon(Icons.emoji_emotions_outlined, size: 21),
+                              padding: EdgeInsets.zero,
+                              // (여기에 constraints 를 주면 버튼이 아니라 뜨는 창 크기가 줄어든다)
+                              style: IconButton.styleFrom(
+                                // 데스크톱 기본값(촘촘한 간격)이면 입력 칸·버튼 높이가 따로 줄어 어긋난다
+                                visualDensity: VisualDensity.standard,
+                                minimumSize: Size(34, fieldMin),
+                                padding: EdgeInsets.zero,
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              ),
+                              onSelected: _insertEmoji,
+                              itemBuilder: (ctx) => [
+                                PopupMenuItem<String>(
+                                  padding: const EdgeInsets.all(8),
+                                  child: SizedBox(
+                                    width: 264,
+                                    child: Wrap(
+                                      children: [
+                                        for (final e in _emojiSet)
+                                          InkWell(
+                                            borderRadius: BorderRadius.circular(8),
+                                            onTap: () => Navigator.pop(ctx, e),
+                                            child: SizedBox(
+                                              width: 44,
+                                              height: 40,
+                                              child: Center(
+                                                child: Text(e,
+                                                    style:
+                                                        const TextStyle(fontSize: 22)),
+                                              ),
+                                            ),
+                                          ),
+                                      ],
                                     ),
-                                    onPressed: _send,
                                   ),
                                 ),
+                              ],
+                            ),
+                            // 듀얼 SIM: 이 대화에서 보낼 SIM 고르기
+                            if (s.sims.length > 1)
+                              PopupMenuButton<String>(
+                                tooltip: () {
+                                  final id = s.simIdFor(conv);
+                                  for (final sim in s.sims) {
+                                    if (sim['participantId'] == id) {
+                                      return '보내는 SIM: ${AppState.simLabel(sim)}';
+                                    }
+                                  }
+                                  return '보내는 SIM 선택';
+                                }(),
+                                icon: const Icon(Icons.sim_card_outlined, size: 21),
+                                padding: EdgeInsets.zero,
+                                style: IconButton.styleFrom(
+                                  // 데스크톱 기본값(촘촘한 간격)이면 입력 칸·버튼 높이가 따로 줄어 어긋난다
+                                  visualDensity: VisualDensity.standard,
+                                  minimumSize: Size(34, fieldMin),
+                                  padding: EdgeInsets.zero,
+                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                ),
+                                onSelected: (id) => s.setSimFor(conv.id, id),
+                                itemBuilder: (ctx) => [
+                                  for (final sim in s.sims)
+                                    CheckedPopupMenuItem<String>(
+                                      value: '${sim['participantId']}',
+                                      checked:
+                                          sim['participantId'] == s.simIdFor(conv),
+                                      child: Text(AppState.simLabel(sim),
+                                          style: const TextStyle(fontSize: 13.5)),
+                                    ),
+                                ],
                               ),
+                              ],
                             ),
                           ),
                         ],
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    // 보내기 버튼: 입력 칸 밖 오른쪽. 보낼 것이 없으면 흐리게(누를 수 없음)
+                    Padding(
+                      padding: EdgeInsets.only(bottom: (fieldMin - 36) / 2),
+                      child: IconButton.filled(
+                        tooltip: s.enterSends
+                            ? '보내기 (Enter)'
+                            : '보내기 (${kMod}Enter)',
+                        icon: const Icon(Icons.arrow_upward_rounded),
+                        iconSize: 19,
+                        padding: EdgeInsets.zero,
+                        constraints:
+                            const BoxConstraints.tightFor(width: 36, height: 36),
+                        style: IconButton.styleFrom(
+                          // 데스크톱 기본값(촘촘한 간격)이면 입력 칸·버튼 높이가 따로 줄어 어긋난다
+                          visualDensity: VisualDensity.standard,
+                          minimumSize: const Size(36, 36),
+                          fixedSize: const Size(36, 36),
+                          padding: EdgeInsets.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        onPressed: _hasText || _files.isNotEmpty ? _send : null,
                       ),
                     ),
                   ],
@@ -2535,6 +3143,8 @@ class _MessageRow extends StatelessWidget {
             content: Text([
               '${mine ? '받는 사람' : '보낸 사람'}: ${mine ? conv.title : (p?.display ?? conv.title)}',
               '시각: ${formatDay(msg.ts)} ${formatTime(msg.ts)}:${d.second.toString().padLeft(2, '0')}',
+              if (msg.typeLabel.isNotEmpty)
+                '종류: ${msg.typeLabel == '채팅' ? 'RCS 채팅' : msg.typeLabel}',
               if (mine && msg.statusLabel.isNotEmpty) '상태: ${msg.statusLabel}',
               if (msg.media.isNotEmpty) '첨부: ${msg.media.length}개',
             ].join('\n')),
@@ -2652,20 +3262,46 @@ class _MessageRow extends StatelessWidget {
         child: Wrap(
           spacing: 4,
           children: [
+            // 공감 칩: 누가 눌렀는지 보여 주고, 누르면 내 공감을 더하거나 뺀다
             for (final r in msg.reactions)
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                decoration: BoxDecoration(
-                  color: c.surface,
-                  border: Border.all(color: c.outlineVariant),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                    r.participants.length > 1
-                        ? '${r.emoji} ${r.participants.length}'
-                        : r.emoji,
-                    style: const TextStyle(fontSize: 13)),
-              ),
+              () {
+                final mineIds = state.myIds(conv);
+                final byMe = r.participants.any(mineIds.contains);
+                final names = [
+                  for (final id in r.participants)
+                    mineIds.contains(id)
+                        ? '나'
+                        : (conv.participant(id)?.display ?? '')
+                ].where((n) => n.isNotEmpty).join(', ');
+                return Tooltip(
+                  message: names.isEmpty ? r.emoji : names,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: msg.isLocal
+                        ? null
+                        : () => state
+                            .react(msg, r.emoji, remove: byMe)
+                            .catchError((Object e) {
+                            if (context.mounted) _toast(context, '실패: $e');
+                          }),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 7, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: byMe ? c.secondaryContainer : c.surface,
+                        border: Border.all(
+                            color: byMe ? c.primary : c.outlineVariant),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                          r.participants.length > 1
+                              ? '${r.emoji} ${r.participants.length}'
+                              : r.emoji,
+                          style: const TextStyle(fontSize: 13)),
+                    ),
+                  ),
+                );
+              }(),
           ],
         ),
       ));

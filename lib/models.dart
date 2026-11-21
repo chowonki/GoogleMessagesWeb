@@ -32,11 +32,16 @@ class Conversation {
         outgoingId = _str(j['outgoingId']),
         pinned = j['pinned'] == true,
         latestMsgId = _str(j['latestMsgId']),
+        type = _str(j['type']),
         participants = ((j['participants'] as List?) ?? const [])
             .map((e) => Participant.fromJson(Map<String, dynamic>.from(e as Map)))
             .toList();
 
   final String id, name, status, color, outgoingId;
+
+  /// 'RCS' 또는 'SMS' (휴대폰이 알려 주는 대화 종류)
+  final String type;
+  bool get isRcs => type == 'RCS';
   int ts;
   bool unread;
   final bool isGroup, readOnly, pinned;

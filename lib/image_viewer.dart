@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:crypto/crypto.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -12,6 +13,7 @@ import 'package:pasteboard/pasteboard.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'bank_account.dart';
 import 'drag_out.dart';
 import 'fade_menu.dart';
 import 'models.dart';
@@ -84,15 +86,22 @@ $e=$null
 try{$ko=New-Object Windows.Globalization.Language 'ko';if([Windows.Media.Ocr.OcrEngine]::IsLanguageSupported($ko)){$e=[Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($ko)}}catch{}
 if($e -eq $null){$e=[Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()}
 $u8=New-Object Text.UTF8Encoding $false
-$in=New-Object IO.StreamReader([Console]::OpenStandardInput(),$u8)
 $o=New-Object IO.StreamWriter([Console]::OpenStandardOutput(),$u8)
 $o.AutoFlush=$true
+# 요청은 폴더에 놓인 파일(*.req, 내용 = 사진 경로)로 받는다. 표준 입력으로 받으면
+# 요청이 전달되지 않고 멈추는 경우가 있었다. 앱이 끝나면 함께 끝난다.
+$dir=$args[0]
+$parent=[Diagnostics.Process]::GetProcessById([int]$args[1])
 $o.WriteLine('READY')
-while(($line=$in.ReadLine()) -ne $null){
- if($line.Trim() -eq ''){continue}
+while(-not $parent.HasExited){
+ $reqs=[IO.Directory]::GetFiles($dir,'*.req')
+ if($reqs.Length -eq 0){[Threading.Thread]::Sleep(15);continue}
+ [Array]::Sort($reqs)
+ foreach($rq in $reqs){
  try{
+  $path=[IO.Path]::GetFullPath([IO.File]::ReadAllText($rq,$u8).Trim())
+  [IO.File]::Delete($rq)
   if($e -eq $null){throw 'no ocr language'}
-  $path=$line.Trim()
   $f=Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($path)) ([Windows.Storage.StorageFile])
   $s=Await ($f.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
   $d=Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($s)) ([Windows.Graphics.Imaging.BitmapDecoder])
@@ -110,6 +119,7 @@ while(($line=$in.ReadLine()) -ne $null){
   $b.Dispose();$s.Dispose()
  }catch{$out=@{error="$_"}|ConvertTo-Json -Compress}
  $o.WriteLine($out)
+ }
 }
 """;
 
@@ -119,17 +129,34 @@ class _OcrWorker {
   Future<void> _queue = Future.value();
   bool _failed = false;
 
-  Future<bool> _ensure() async {
-    if (_p != null) return true;
+  Future<bool>? _starting;
+  Directory? _reqDir;
+  int _seq = 0;
+
+  /// 작업자를 띄운다. 동시에 여러 번 불려도 한 번만 띄운다.
+  /// (미리 띄우기와 첫 인식 요청이 겹치면 작업자가 둘 생겨, 요청은 한쪽에 보내고
+  /// 답은 다른 쪽에서 기다리다 20초를 허비하던 문제가 있었다)
+  Future<bool> _ensure() {
+    if (_p != null) return Future.value(true);
+    return _starting ??= _start().whenComplete(() => _starting = null);
+  }
+
+  Future<bool> _start() async {
     if (_failed || !Platform.isWindows) return false;
     try {
       // 스크립트를 파일로 두고 실행한다 (긴 명령줄을 보안 프로그램이 막는 경우가 있음)
       final script = File(
           '${Directory.systemTemp.path}${Platform.pathSeparator}gm_ocr_worker.ps1');
       await script.writeAsString(_ocrWorkerScript, flush: true);
+      // 요청 파일을 놓을 폴더 (앱 실행마다 따로)
+      final dir = Directory(
+          '${Directory.systemTemp.path}${Platform.pathSeparator}gm_ocr_req_$pid');
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+      dir.createSync(recursive: true);
+      _reqDir = dir;
       final p = await Process.start('powershell', [
         '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-        '-File', script.path,
+        '-File', script.path, dir.path, '$pid',
       ]);
       p.stderr.drain<void>();
       final it = StreamIterator(p.stdout
@@ -169,19 +196,27 @@ class _OcrWorker {
       try {
         if (!await _ensure()) return c.complete(null);
         final sw = Stopwatch()..start();
-        _p!.stdin.add(utf8.encode('$path\n'));
-        await _p!.stdin.flush();
-        final ok = await _lines!
+        // 요청을 보낸 바로 그 작업자의 답을 읽는다
+        final p = _p!, lines = _lines!;
+        // 다 쓴 뒤 이름을 바꿔, 작업자가 쓰다 만 요청을 읽지 않게 한다
+        final base =
+            '${_reqDir!.path}${Platform.pathSeparator}${(_seq++).toString().padLeft(8, '0')}';
+        File('$base.tmp')
+          ..writeAsStringSync(path, flush: true)
+          ..renameSync('$base.req');
+        final ok = await lines
             .moveNext()
-            .timeout(const Duration(seconds: 20), onTimeout: () => false);
+            .timeout(const Duration(seconds: 8), onTimeout: () => false);
         if (!ok) {
-          _p?.kill();
-          _p = null;
-          _lines = null;
+          p.kill();
+          if (identical(_p, p)) {
+            _p = null;
+            _lines = null;
+          }
           _ocrLog('worker timeout');
           return c.complete(null);
         }
-        final json = _lines!.current.trim();
+        final json = lines.current.trim();
         _ocrLog('worker ocr ${sw.elapsedMilliseconds}ms');
         c.complete(json);
       } catch (e) {
@@ -200,7 +235,49 @@ final _OcrWorker _worker = _OcrWorker();
 
 /// 앱 시작 뒤 한 번 호출해 인식 엔진을 미리 띄워 둔다
 Future<void> prewarmOcr() async {
-  if (Platform.isWindows) await _worker._ensure();
+  if (!Platform.isWindows) return;
+  await _worker._ensure();
+  _pruneOcrDiskCache();
+}
+
+// ── 인식 결과 보관 (Windows) ──
+// 사진 창은 따로 실행되는 프로그램이라 매번 인식 엔진을 새로 띄워야 한다. 그래서
+// 본 앱이 사진을 여는 순간 (이미 떠 있는 엔진으로) 먼저 인식해 결과를 파일로 남기고,
+// 사진 창은 그 파일이 있으면 바로 쓴다. 같은 사진을 다시 열 때도 즉시 나온다.
+Directory get _ocrDiskDir => Directory(
+    '${Directory.systemTemp.path}${Platform.pathSeparator}gm_ocr_cache');
+
+File? _ocrDiskFile(String path) {
+  try {
+    final st = File(path).statSync();
+    if (st.type == FileSystemEntityType.notFound) return null;
+    final key = md5
+        .convert(utf8.encode(
+            '$path|${st.size}|${st.modified.millisecondsSinceEpoch}'))
+        .toString();
+    return File('${_ocrDiskDir.path}${Platform.pathSeparator}$key.json');
+  } catch (_) {
+    return null;
+  }
+}
+
+/// 일주일 넘은 보관 결과는 지운다
+void _pruneOcrDiskCache() {
+  try {
+    final dir = _ocrDiskDir;
+    if (!dir.existsSync()) return;
+    final limit = DateTime.now().subtract(const Duration(days: 7));
+    for (final f in dir.listSync()) {
+      if (f is File && f.statSync().modified.isBefore(limit)) {
+        f.deleteSync();
+      }
+    }
+  } catch (_) {}
+}
+
+/// 사진 창을 띄우기 직전에 본 앱에서 불러, 인식을 미리 해 둔다
+void precomputeOcr(String path) {
+  if (Platform.isWindows) recognizeText(path).ignore();
 }
 
 OcrResult? _parseOcr(String text) {
@@ -252,10 +329,42 @@ Future<OcrResult?> _recognize(String path) async {
     }
   }
   if (!Platform.isWindows) return null;
+  // 가장 빠른 길: 이미 인식해 둔 결과 (본 앱이 미리 해 뒀거나 전에 열어 본 사진)
+  final disk = _ocrDiskFile(path);
+  try {
+    if (disk != null && disk.existsSync()) {
+      final r = _parseOcr(disk.readAsStringSync());
+      if (r != null) {
+        _ocrLog('disk cache hit');
+        return r;
+      }
+    }
+  } catch (_) {}
   // 빠른 길: 미리 떠 있는 작업자에게 맡긴다
   try {
+    // 작업자가 뜨는 사이 본 앱이 결과를 남겼으면 그걸 쓴다
+    await _worker._ensure();
+    if (disk != null && disk.existsSync()) {
+      final r = _parseOcr(disk.readAsStringSync());
+      if (r != null) {
+        _ocrLog('disk cache hit (late)');
+        return r;
+      }
+    }
     final json = await _worker.run(path);
-    if (json != null) return _parseOcr(json);
+    if (json != null) {
+      final r = _parseOcr(json);
+      if (r != null && disk != null) {
+        try {
+          disk.parent.createSync(recursive: true);
+          // 다 쓴 뒤 이름을 바꿔, 사진 창이 쓰다 만 파일을 읽지 않게 한다
+          final tmp = File('${disk.path}.$pid.tmp')
+            ..writeAsStringSync(json, flush: true);
+          tmp.renameSync(disk.path);
+        } catch (_) {}
+      }
+      return r;
+    }
   } catch (e) {
     _ocrLog('worker parse exception: $e');
   }
@@ -332,6 +441,8 @@ Future<void> showImageViewer(BuildContext context, AppState state,
       ];
       final first = await futures[index];
       if (first != null && context.mounted) {
+        // 사진 창이 뜨는 동안, 이미 떠 있는 엔진으로 글자를 먼저 인식해 둔다
+        precomputeOcr(first);
         final stamp = DateTime.now().microsecondsSinceEpoch;
         final tmp = '${Directory.systemTemp.path}${Platform.pathSeparator}';
         final spec = File('${tmp}gm_viewer_$stamp.json');
@@ -518,6 +629,9 @@ class _ImageViewerState extends State<ImageViewer> {
   bool _liveText = false;
   bool _ocrBusy = false;
   OcrResult? _ocr;
+
+  /// 사진 속 글자에서 찾은 계좌 정보 (은행·계좌번호·예금주). 없으면 null
+  AccountInfo? _account;
   String? _toast;
   Timer? _toastTimer;
 
@@ -551,6 +665,12 @@ class _ImageViewerState extends State<ImageViewer> {
         mi('save', Symbols.download, '다른 이름으로 저장…', enabled: _path != null),
         mi('open', Symbols.open_in_new, '기본 앱으로 열기', enabled: _path != null),
         const PopupMenuDivider(height: 9),
+        if (_account != null) ...[
+          mi('copyAccount', Symbols.account_balance,
+              '계좌번호 복사 (${_account!.number})'),
+          mi('copyAccountAll', Symbols.receipt_long, '계좌 정보 모두 복사'),
+          const PopupMenuDivider(height: 9),
+        ],
         if (hasText) mi('copyText', Symbols.text_fields, '글자 모두 복사'),
         if (hasText) mi('allText', Symbols.article, '인식한 글자 보기'),
         if (hasText) const PopupMenuDivider(height: 9),
@@ -572,6 +692,10 @@ class _ImageViewerState extends State<ImageViewer> {
         _save();
       case 'open':
         launchUrl(Uri.file(_path!));
+      case 'copyAccount':
+        _copyText(_account!.number, '계좌번호를 복사했습니다');
+      case 'copyAccountAll':
+        _copyText(_account!.summary, '계좌 정보를 복사했습니다');
       case 'copyText':
         _copyText(ocr!.text, '글자를 복사했습니다');
       case 'allText':
@@ -626,6 +750,7 @@ class _ImageViewerState extends State<ImageViewer> {
       _natural = null;
       _error = null;
       _ocr = null;
+      _account = null;
       _turns = 0;
       _tc.value = Matrix4.identity();
     });
@@ -654,7 +779,11 @@ class _ImageViewerState extends State<ImageViewer> {
     if (!mounted) return;
     setState(() {
       _ocrBusy = false;
-      if (path == _path) _ocr = r;
+      if (path == _path) {
+        _ocr = r;
+        _account =
+            r == null ? null : parseAccount([for (final l in r.lines) l.text]);
+      }
     });
   }
 
@@ -703,6 +832,72 @@ class _ImageViewerState extends State<ImageViewer> {
     } catch (_) {
       _say('복사하지 못했습니다');
     }
+  }
+
+  /// 찾은 계좌 정보 막대: 항목을 누르면 그 값만 복사한다 (계좌번호는 숫자만)
+  Widget _accountBar(AccountInfo a) {
+    Widget chip(String label, String value, String done, {bool mono = false}) =>
+        Tooltip(
+          message: '$label 복사',
+          child: Material(
+            color: Colors.white.withValues(alpha: 0.10),
+            borderRadius: BorderRadius.circular(14),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(14),
+              onTap: () => _copyText(value, done),
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Text(label,
+                      style: const TextStyle(
+                          color: Colors.white60, fontSize: 11.5)),
+                  const SizedBox(width: 7),
+                  Flexible(
+                    child: Text(value,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: mono ? 0.4 : 0)),
+                  ),
+                ]),
+              ),
+            ),
+          ),
+        );
+    return Container(
+      padding: const EdgeInsets.fromLTRB(10, 6, 6, 6),
+      decoration: BoxDecoration(
+        color: const Color(0xE6222226),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Symbols.account_balance, size: 18, color: Colors.white70),
+          const SizedBox(width: 8),
+          if (a.bank.isNotEmpty) ...[
+            Flexible(child: chip('은행', a.bank, '은행 이름을 복사했습니다')),
+            const SizedBox(width: 6),
+          ],
+          Flexible(
+              flex: 2,
+              child:
+                  chip('계좌번호', a.number, '계좌번호를 복사했습니다', mono: true)),
+          if (a.holder.isNotEmpty) ...[
+            const SizedBox(width: 6),
+            Flexible(child: chip('예금주', a.holder, '예금주를 복사했습니다')),
+          ],
+          const SizedBox(width: 4),
+          _btn(Symbols.content_copy, '계좌 정보 모두 복사',
+              () => _copyText(a.summary, '계좌 정보를 복사했습니다')),
+        ],
+      ),
+    );
   }
 
   Future<void> _copyText(String text, String what) async {
@@ -1066,9 +1261,17 @@ class _ImageViewerState extends State<ImageViewer> {
                 ),
               ),
             ),
+            // 계좌 정보: 사진에서 은행·계좌번호·예금주를 찾았으면 눌러서 복사
+            if (_account != null)
+              Positioned(
+                bottom: 78,
+                left: 12,
+                right: 12,
+                child: Center(child: _accountBar(_account!)),
+              ),
             if (_toast != null)
               Positioned(
-                bottom: 84,
+                bottom: _account != null ? 128 : 84,
                 left: 0,
                 right: 0,
                 child: Center(

@@ -327,7 +327,8 @@ func dispatch(ctx context.Context, method string, raw json.RawMessage) (any, err
 		return out, nil
 	case "startConversation":
 		a, err := args[struct {
-			Numbers []string `json:"numbers"`
+			Numbers   []string `json:"numbers"`
+			GroupName string   `json:"groupName"`
 		}](raw)
 		if err != nil {
 			return nil, err
@@ -340,9 +341,22 @@ func dispatch(ctx context.Context, method string, raw json.RawMessage) (any, err
 		for _, n := range a.Numbers {
 			nums = append(nums, &gmproto.ContactNumber{MysteriousInt: 7, Number: n, Number2: n})
 		}
-		resp, err := c.GetOrCreateConversation(ctx, &gmproto.GetOrCreateConversationRequest{Numbers: nums})
+		req := &gmproto.GetOrCreateConversationRequest{Numbers: nums}
+		resp, err := c.GetOrCreateConversation(ctx, req)
 		if err != nil {
 			return nil, err
+		}
+		// 모두 RCS 를 쓰는 그룹이면 휴대폰이 "RCS 그룹으로 만들라"고 답한다 (웹과 같은 흐름)
+		if resp.GetConversation() == nil && resp.GetStatus() == gmproto.GetOrCreateConversationResponse_CREATE_RCS {
+			create := true
+			req.CreateRCSGroup = &create
+			if name := strings.TrimSpace(a.GroupName); name != "" {
+				req.RCSGroupName = &name
+			}
+			resp, err = c.GetOrCreateConversation(ctx, req)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if resp.GetConversation() == nil {
 			return nil, fmt.Errorf("대화를 만들지 못했습니다 (status %s)", resp.GetStatus())
@@ -352,12 +366,21 @@ func dispatch(ctx context.Context, method string, raw json.RawMessage) (any, err
 	case "updateConversation":
 		a, err := args[struct {
 			ConvID string `json:"convId"`
-			Action string `json:"action"` // archive | unarchive | delete
+			// archive | unarchive | delete | block | spam | unblock | mute | unmute | rename
+			Action string `json:"action"`
+			Name   string `json:"name"`
 		}](raw)
 		if err != nil {
 			return nil, err
 		}
-		return nil, updateConversation(ctx, a.ConvID, a.Action)
+		return nil, updateConversation(ctx, a.ConvID, a.Action, a.Name)
+	case "setActive":
+		// 다른 곳(브라우저 등)에서 메시지 웹을 열어 이 앱이 비활성화됐을 때 "여기서 사용"
+		c, err := b.cli()
+		if err != nil {
+			return nil, err
+		}
+		return nil, c.SetActiveSession(ctx)
 	}
 	return nil, fmt.Errorf("unknown method %q", method)
 }
@@ -597,9 +620,24 @@ func handleEvent(rawEvt any) {
 				"carrier":       sim.GetSIMData().GetCarrierName(),
 				"number":        sim.GetSIMData().GetFormattedPhoneNumber(),
 				"color":         sim.GetSIMData().GetColorHex(),
+				"slot":          sim.GetSIMData().GetSIMPayload().GetSIMNumber(),
+				"rcs":           sim.GetRCSChats().GetEnabled(),
 			})
 		}
-		emit(map[string]any{"type": "settings", "sims": sims})
+		rcs := evt.GetRCSSettings()
+		emit(map[string]any{
+			"type": "settings",
+			"sims": sims,
+			"rcs": map[string]any{
+				"enabled":          rcs.GetIsEnabled(),
+				"readReceipts":     rcs.GetSendReadReceipts(),
+				"typingIndicators": rcs.GetShowTypingIndicators(),
+			},
+			"phoneAppVersion": evt.GetBugleVersion(),
+		})
+	case *gmproto.UserAlertEvent:
+		// 휴대폰 상태 알림: 모바일 데이터 사용, 배터리 부족, 다른 곳에서 사용 중 등
+		emit(map[string]any{"type": "alert", "alert": evt.GetAlertType().String()})
 	case *events.PairSuccessful:
 		go b.saveSession()
 	}
@@ -756,25 +794,87 @@ func download(ctx context.Context, mediaID, key, path string) (any, error) {
 	return map[string]any{"path": path}, nil
 }
 
-func updateConversation(ctx context.Context, convID, action string) error {
+// 대화 상대(내가 아닌 첫 참여자)의 전화번호. 삭제·차단 요청에 함께 보낸다.
+func (br *bridge) peerPhone(convID string) string {
+	br.mu.Lock()
+	defer br.mu.Unlock()
+	if conv := br.convs[convID]; conv != nil {
+		for _, p := range conv.GetParticipants() {
+			if !p.GetIsMe() && p.GetID().GetNumber() != "" {
+				return p.GetID().GetNumber()
+			}
+		}
+	}
+	return ""
+}
+
+func updateConversation(ctx context.Context, convID, action, name string) error {
 	c, err := b.cli()
 	if err != nil {
 		return err
 	}
 	switch action {
 	case "delete":
-		phone := ""
-		b.mu.Lock()
-		if conv := b.convs[convID]; conv != nil {
-			for _, p := range conv.GetParticipants() {
-				if !p.GetIsMe() {
-					phone = p.GetID().GetNumber()
-					break
-				}
+		return c.DeleteConversation(ctx, convID, b.peerPhone(convID))
+	case "block", "spam", "unblock":
+		// block: 차단, spam: 차단하고 스팸 신고, unblock: 차단 해제
+		act := gmproto.ConversationActionStatus_UNBLOCK
+		var act5 *gmproto.ConversationAction5
+		if action != "unblock" {
+			act5 = &gmproto.ConversationAction5{Field2: true}
+			act = gmproto.ConversationActionStatus_BLOCK
+			if action == "spam" {
+				act = gmproto.ConversationActionStatus_BLOCK_AND_REPORT
 			}
 		}
-		b.mu.Unlock()
-		return c.DeleteConversation(ctx, convID, phone)
+		data := &gmproto.DeleteConversationData{ConversationID: convID}
+		if phone := b.peerPhone(convID); phone != "" {
+			data.Phone = &phone
+		}
+		resp, err := c.UpdateConversation(ctx, &gmproto.UpdateConversationRequest{
+			Action:         act,
+			ConversationID: convID,
+			Action5:        act5,
+			Data:           &gmproto.UpdateConversationRequest_DeleteData{DeleteData: data},
+		})
+		if err != nil {
+			return err
+		}
+		if !resp.GetSuccess() {
+			return errors.New("휴대폰이 요청을 처리하지 못했습니다")
+		}
+		return nil
+	case "mute", "unmute":
+		st := gmproto.ConversationMuteStatus_MUTE
+		if action == "unmute" {
+			st = gmproto.ConversationMuteStatus_UNMUTE
+		}
+		_, err = c.UpdateConversation(ctx, &gmproto.UpdateConversationRequest{
+			ConversationID: convID,
+			Data: &gmproto.UpdateConversationRequest_UpdateData{UpdateData: &gmproto.UpdateConversationData{
+				ConversationID: convID,
+				Data:           &gmproto.UpdateConversationData_Mute{Mute: st},
+			}},
+		})
+		return err
+	case "rename":
+		// RCS 그룹 대화만 이름을 바꿀 수 있다
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return errors.New("그룹 이름을 입력해 주세요")
+		}
+		resp, err := c.UpdateConversation(ctx, &gmproto.UpdateConversationRequest{
+			Action:         gmproto.ConversationActionStatus_RENAME_GROUP,
+			ConversationID: convID,
+			Data:           &gmproto.UpdateConversationRequest_RenameData{RenameData: &gmproto.RenameGroupData{Name: name}},
+		})
+		if err != nil {
+			return err
+		}
+		if !resp.GetSuccess() {
+			return errors.New("휴대폰이 이름 변경을 처리하지 못했습니다")
+		}
+		return nil
 	case "archive", "unarchive":
 		st := gmproto.ConversationStatus_ARCHIVED
 		if action == "unarchive" {
@@ -801,6 +901,8 @@ type sendArgs struct {
 	Path    string `json:"path"`
 	Mime    string `json:"mime"`
 	ReplyTo string `json:"replyTo"`
+	// 보낼 SIM 의 participantId (듀얼 SIM 에서 직접 고른 경우). 비면 대화의 기본 SIM.
+	SimID string `json:"simId"`
 }
 
 func sendMessage(ctx context.Context, a sendArgs) (any, error) {
@@ -845,8 +947,15 @@ func sendMessage(ctx context.Context, a sendArgs) (any, error) {
 	if len(infos) == 0 {
 		return nil, errors.New("보낼 내용이 없습니다")
 	}
+	outgoingID := conv.GetDefaultOutgoingID()
 	b.mu.Lock()
-	sim := b.sims[conv.GetDefaultOutgoingID()]
+	sim := b.sims[outgoingID]
+	if a.SimID != "" {
+		if chosen, ok := b.sims[a.SimID]; ok {
+			sim = chosen
+			outgoingID = a.SimID
+		}
+	}
 	b.mu.Unlock()
 	simPayload := sim.GetSIMData().GetSIMPayload()
 	if simPayload == nil {
@@ -857,7 +966,7 @@ func sendMessage(ctx context.Context, a sendArgs) (any, error) {
 		MessagePayload: &gmproto.MessagePayload{
 			TmpID:          a.TmpID,
 			ConversationID: a.ConvID,
-			ParticipantID:  conv.GetDefaultOutgoingID(),
+			ParticipantID:  outgoingID,
 			TmpID2:         a.TmpID,
 			MessageInfo:    infos,
 		},

@@ -28,7 +28,7 @@ import 'style.dart';
 import 'tray_menu.dart';
 
 const String kAppName = 'Google 메시지';
-const String kVersion = '1.0.12';
+const String kVersion = '1.0.13';
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -188,8 +188,9 @@ class MessagesApp extends StatelessWidget {
             onSecondaryContainer: const Color(0xFFFAFAFA),
             outline: const Color(0xFF5C5C5C),
             outlineVariant: const Color(0xFF333333),
-            tertiaryContainer: const Color(0xFF3A2E12),
-            onTertiaryContainer: const Color(0xFFFFD98A),
+            // 알림 띠(연결 상태·휴대폰 상태) 색: 푸른 계열
+            tertiaryContainer: const Color(0xFF14294A),
+            onTertiaryContainer: const Color(0xFFB4D2FF),
             error: const Color(0xFFFF6B60),
           )
         : base.copyWith(
@@ -205,6 +206,9 @@ class MessagesApp extends StatelessWidget {
             secondaryContainer: const Color(0xFFE6F0FF),
             onSecondaryContainer: const Color(0xFF000000),
             outlineVariant: const Color(0xFFE2E2E7),
+            // 알림 띠(연결 상태·휴대폰 상태) 색: 푸른 계열
+            tertiaryContainer: const Color(0xFFDCEBFF),
+            onTertiaryContainer: const Color(0xFF0B3A78),
             error: const Color(0xFFE5392D),
           );
     final pill = RoundedRectangleBorder(borderRadius: BorderRadius.circular(26));
@@ -275,6 +279,28 @@ class MessagesApp extends StatelessWidget {
     );
   }
 
+  /// 고대비 모드: 흐린 글자와 경계선을 진하게 바꾼다
+  ThemeData _themed(Brightness b) {
+    final t = _theme(b);
+    if (!state.highContrast) return t;
+    final dark = b == Brightness.dark;
+    return t.copyWith(
+      colorScheme: t.colorScheme.copyWith(
+        onSurface: dark ? Colors.white : Colors.black,
+        onSurfaceVariant:
+            dark ? const Color(0xFFE2E2E2) : const Color(0xFF2A2A2A),
+        outline: dark ? Colors.white : Colors.black,
+        outlineVariant:
+            dark ? const Color(0xFF9A9A9A) : const Color(0xFF5E5E5E),
+        primary: dark ? const Color(0xFF8FC0FF) : const Color(0xFF0046B5),
+        onPrimary: dark ? Colors.black : Colors.white,
+      ),
+      dividerTheme: DividerThemeData(
+          color: dark ? const Color(0xFF9A9A9A) : const Color(0xFF5E5E5E),
+          thickness: 1),
+    );
+  }
+
   ThemeData _theme(Brightness b) {
     if (oneUi) return oneUiTheme(b);
     final dark = b == Brightness.dark;
@@ -295,8 +321,8 @@ class MessagesApp extends StatelessWidget {
             onSecondaryContainer: const Color(0xFFE6E8FF),
             outline: const Color(0xFF5A5A66),
             outlineVariant: const Color(0xFF30303A),
-            tertiaryContainer: const Color(0xFF372D12),
-            onTertiaryContainer: const Color(0xFFFFDB8A),
+            tertiaryContainer: const Color(0xFF14294A),
+            onTertiaryContainer: const Color(0xFFB4D2FF),
           )
         : base.copyWith(
             primary: const Color(0xFF3F4EF0),
@@ -311,6 +337,8 @@ class MessagesApp extends StatelessWidget {
             secondaryContainer: const Color(0xFFE6E9FF),
             onSecondaryContainer: const Color(0xFF1B2170),
             outlineVariant: const Color(0xFFE2E4EC),
+            tertiaryContainer: const Color(0xFFDCEBFF),
+            onTertiaryContainer: const Color(0xFF0B3A78),
           );
     return ThemeData(
       useMaterial3: true,
@@ -360,8 +388,8 @@ class MessagesApp extends StatelessWidget {
         locale: const Locale('ko'),
         supportedLocales: const [Locale('ko'), Locale('en')],
         localizationsDelegates: GlobalMaterialLocalizations.delegates,
-        theme: _theme(Brightness.light),
-        darkTheme: _theme(Brightness.dark),
+        theme: _themed(Brightness.light),
+        darkTheme: _themed(Brightness.dark),
         themeMode: state.themeMode,
         home: startError != null
             ? Scaffold(
@@ -798,9 +826,12 @@ class _ShellState extends State<Shell> with WindowListener, TrayListener {
       if (p != null && show) body = '${p.display}: $body';
     }
     // 직접 고른 알림 소리가 있으면 시스템 소리는 끄고 그 파일을 재생한다
-    final sound = s.soundPath;
+    // '알림 소리 재생'을 끄면 소리 없이 알림만 띄운다
+    final sound = s.notifySound ? s.soundPath : null;
     final n = LocalNotification(
-        title: hide ? kAppName : title, body: body, silent: sound != null);
+        title: hide ? kAppName : title,
+        body: body,
+        silent: !s.notifySound || sound != null);
     if (sound != null) playSoundFile(sound);
     n.onClick = () {
       _showWindow();
@@ -964,6 +995,17 @@ class _ShellState extends State<Shell> with WindowListener, TrayListener {
                               ),
                             ),
                             _SettingsRow(
+                              icon: Symbols.volume_up,
+                              title: '알림 소리 재생',
+                              subtitle: '끄면 소리 없이 알림만 띄웁니다',
+                              trailing: Switch(
+                                value: s.notifySound,
+                                onChanged: s.notificationsEnabled
+                                    ? (v) => s.notifySound = v
+                                    : null,
+                              ),
+                            ),
+                            _SettingsRow(
                               icon: Symbols.music_note,
                               title: '알림 소리',
                               subtitle: s.soundPath == null
@@ -993,8 +1035,38 @@ class _ShellState extends State<Shell> with WindowListener, TrayListener {
                               ),
                             ),
                           ]),
+                          if (tab == '알림')
+                          _SettingsGroup(label: '휴대폰 상태', children: [
+                            _SettingsRow(
+                              icon: Symbols.signal_cellular_alt,
+                              title: '데이터 사용 알림',
+                              subtitle: '휴대폰이 Wi-Fi 대신 모바일 데이터를 쓰면 알려 줍니다',
+                              trailing: Switch(
+                                value: s.dataAlert,
+                                onChanged: (v) => s.dataAlert = v,
+                              ),
+                            ),
+                            _SettingsRow(
+                              icon: Symbols.battery_alert,
+                              title: '배터리 부족 알림',
+                              subtitle: '휴대폰 배터리가 부족하면 알려 줍니다',
+                              trailing: Switch(
+                                value: s.batteryAlert,
+                                onChanged: (v) => s.batteryAlert = v,
+                              ),
+                            ),
+                          ]),
                           if (tab == '화면')
                           _SettingsGroup(label: '화면', children: [
+                            _SettingsRow(
+                              icon: Symbols.contrast_rtl_off,
+                              title: '고대비 모드',
+                              subtitle: '글자와 경계선을 더 진하게 표시합니다',
+                              trailing: Switch(
+                                value: s.highContrast,
+                                onChanged: (v) => s.highContrast = v,
+                              ),
+                            ),
                             _SettingsRow(
                               icon: Symbols.contrast,
                               title: '테마',
@@ -1133,6 +1205,48 @@ class _ShellState extends State<Shell> with WindowListener, TrayListener {
                                   size: 22, color: c.onSurfaceVariant),
                               onTap: () => _openShortcuts(ctx),
                             ),
+                          ]),
+                          if (tab == '일반')
+                          _SettingsGroup(label: '채팅 기능 (RCS)', children: [
+                            _SettingsRow(
+                              icon: Symbols.chat,
+                              title: 'RCS 채팅',
+                              subtitle: s.rcs.isEmpty
+                                  ? '휴대폰에서 정보를 받는 중입니다'
+                                  : [
+                                      s.rcs['enabled'] == true
+                                          ? '사용 중'
+                                          : '사용 안 함',
+                                      '읽음 확인 ${s.rcs['readReceipts'] == true ? '켜짐' : '꺼짐'}',
+                                      '입력 표시 ${s.rcs['typingIndicators'] == true ? '켜짐' : '꺼짐'}',
+                                    ].join(' · '),
+                              trailing: Text('휴대폰에서 변경',
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: c.onSurfaceVariant)),
+                            ),
+                            _SettingsRow(
+                              icon: Symbols.more_horiz,
+                              title: '입력 중 표시 보내기',
+                              subtitle: 'RCS 대화에서 글을 쓰는 동안 상대에게 알립니다',
+                              trailing: Switch(
+                                value: s.sendTyping,
+                                onChanged: (v) => s.sendTyping = v,
+                              ),
+                            ),
+                          ]),
+                          if (tab == '계정' && s.sims.isNotEmpty)
+                          _SettingsGroup(label: '연결된 휴대폰', children: [
+                            for (final sim in s.sims)
+                              _SettingsRow(
+                                icon: Symbols.sim_card,
+                                title: AppState.simLabel(sim).isEmpty
+                                    ? 'SIM'
+                                    : AppState.simLabel(sim),
+                                subtitle: sim['rcs'] == true
+                                    ? 'RCS 채팅 사용'
+                                    : '문자(SMS/MMS)',
+                              ),
                           ]),
                           if (tab == '계정')
                           _SettingsGroup(label: '계정', children: [
