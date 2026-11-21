@@ -28,7 +28,7 @@ import 'style.dart';
 import 'tray_menu.dart';
 
 const String kAppName = 'Google 메시지';
-const String kVersion = '1.0.13';
+const String kVersion = '1.0.14';
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
