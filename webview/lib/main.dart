@@ -16,7 +16,7 @@ import 'package:window_manager/window_manager.dart';
 import 'package:windows_single_instance/windows_single_instance.dart';
 import 'package:windows_taskbar/windows_taskbar.dart';
 
-import 'title_bar.dart';
+import 'window_controls.dart';
 
 const String kAppName = 'Google 메시지';
 const String kHomeUrl = 'https://messages.google.com/web/';
@@ -108,8 +108,8 @@ List<String> pageScripts = const [];
 WebViewEnvironment? webViewEnvironment;
 bool webViewAvailable = true;
 
-/// 지금 페이지의 배경색. 제목 표시줄과 앱의 밝게/어둡게가 이 값을 따른다.
-late final ValueNotifier<PageColors> pageColors;
+/// 지금 페이지 머리말의 모습. 창 단추와 앱의 밝게/어둡게가 이 값을 따른다.
+late final ValueNotifier<PageChrome> pageChrome;
 
 Future<void> showMainWindow() async {
   if (await windowManager.isMinimized()) await windowManager.restore();
@@ -152,6 +152,9 @@ Future<void> main(List<String> args) async {
   }
 
   pageScripts = [
+    // 창 단추를 앱이 그릴 때만 페이지가 그 자리를 비우고 머리말의 빈 구간을 알려 준다 (theme.js)
+    if (Platform.isWindows)
+      'window.__gmCaptionWidth = ${kCaptionWidth.round()};',
     for (final asset in kPageScriptAssets) await rootBundle.loadString(asset),
   ];
 
@@ -170,13 +173,13 @@ Future<void> main(List<String> args) async {
     minimumSize: const Size(420, 480),
     center: saved == null,
     title: kAppName,
-    // Windows: 제목 표시줄은 페이지 색에 맞춰 앱이 직접 그린다 (title_bar.dart)
+    // Windows: 제목 표시줄 없이 창 단추만 페이지 머리말 위에 얹는다 (window_controls.dart)
     titleBarStyle: Platform.isWindows ? TitleBarStyle.hidden : null,
   );
-  pageColors = ValueNotifier(PageColors.load(
+  pageChrome = ValueNotifier(PageChrome.load(
       prefs, WidgetsBinding.instance.platformDispatcher.platformBrightness));
   await windowManager.waitUntilReadyToShow(options, () async {
-    applyWindowFrameBrightness(pageColors.value.isDark);
+    applyWindowFrameBrightness(pageChrome.value.isDark);
     if (saved != null) await windowManager.setBounds(saved);
     if (prefs.getBool('maximized') ?? false) await windowManager.maximize();
     await windowManager.setPreventClose(true);
@@ -242,8 +245,8 @@ class MessagesWebApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final home = HomePage(prefs: prefs);
-    return ValueListenableBuilder<PageColors>(
-      valueListenable: pageColors,
+    return ValueListenableBuilder<PageChrome>(
+      valueListenable: pageChrome,
       builder: (context, colors, _) => MaterialApp(
         title: kAppName,
         debugShowCheckedModeBanner: false,
@@ -274,6 +277,7 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
   int _badgeShown = 0;
   bool _loading = true;
   bool _maximized = false;
+  bool _pageReady = false; // 페이지가 머리말 모습을 알려 왔다
   String? _loadError;
 
   SharedPreferences get prefs => widget.prefs;
@@ -519,36 +523,65 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
     _applyBadge();
   }
 
-  /// 페이지가 알려 준 배경색(theme.js)을 제목 표시줄·창 테두리에 반영한다
-  void _onPageColors(List<dynamic> args) {
-    if (args.length < 3 || args.any((a) => a is! num)) return;
-    Color opaque(num rgb) => Color(0xFF000000 | rgb.toInt());
-    final colors = PageColors(
-        opaque(args[0] as num), opaque(args[1] as num), (args[2] as num) + 0.0);
-    final previous = pageColors.value;
-    if (colors == previous) return;
-    pageColors.value = colors;
-    colors.save(prefs);
-    if (colors.isDark != previous.isDark) {
-      applyWindowFrameBrightness(colors.isDark);
+  /// 페이지가 알려 준 머리말 모습(theme.js)을 창 단추·창 테두리에 반영한다
+  void _onPageChrome(List<dynamic> args) {
+    if (args.length < 3 || args[0] is! num || args[1] is! num) return;
+    final spans = args[2];
+    final chrome = PageChrome(
+      Color(0xFF000000 | (args[0] as num).toInt()),
+      (args[1] as num) + 0.0,
+      [
+        if (spans is List)
+          for (final x in spans)
+            if (x is num) x + 0.0,
+      ],
+    );
+    if (!_pageReady) setState(() => _pageReady = true);
+    final previous = pageChrome.value;
+    if (chrome == previous) return;
+    pageChrome.value = chrome;
+    chrome.save(prefs);
+    if (chrome.isDark != previous.isDark) {
+      applyWindowFrameBrightness(chrome.isDark);
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final content = _content(context);
+    if (!Platform.isWindows) return Scaffold(body: content);
+    // Windows: 제목 표시줄 없이 화면이 창 전체를 덮고, 창 단추를 그 위에 얹는다
+    final pageShown = _pageReady && _loadError == null;
     return Scaffold(
-      body: Column(
-        children: [
-          if (Platform.isWindows)
-            ValueListenableBuilder<PageColors>(
-              valueListenable: pageColors,
-              builder: (context, colors, _) => TitleBar(
-                colors: colors,
-                maximized: _maximized,
+      body: ValueListenableBuilder<PageChrome>(
+        valueListenable: pageChrome,
+        child: content,
+        builder: (context, chrome, content) => Stack(
+          children: [
+            Positioned.fill(child: content!),
+            // 창을 끌어 옮기는 손잡이: 머리말의 빈 구간들.
+            // 페이지가 아직 없거나 불러오지 못했을 때는 맨 위 띠 전체.
+            for (final (left, width) in pageShown
+                ? chrome.dragSpans
+                : const [(0.0, double.infinity)])
+              Positioned(
+                top: 0,
+                left: left,
+                width: width.isFinite ? width : null,
+                right: width.isFinite ? null : kCaptionWidth,
+                height: chrome.captionHeight,
+                child: const DragToMoveArea(child: SizedBox.expand()),
               ),
+            Positioned(
+              top: 0,
+              right: 0,
+              child: WindowControls(chrome: chrome, maximized: _maximized),
             ),
-          Expanded(child: _content(context)),
-        ],
+            if (!_maximized)
+              const Positioned(
+                  top: 0, left: 0, right: 0, child: TopResizeEdge()),
+          ],
+        ),
       ),
     );
   }
@@ -593,7 +626,7 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
           onWebViewCreated: (c) {
             _web = c;
             c.addJavaScriptHandler(
-                handlerName: 'gmTheme', callback: _onPageColors);
+                handlerName: 'gmTheme', callback: _onPageChrome);
             c.addJavaScriptHandler(
               handlerName: 'gmOcr',
               callback: (args) async {

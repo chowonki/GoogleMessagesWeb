@@ -1,4 +1,5 @@
-// 앱이 직접 그리는 제목 표시줄. 페이지 맨 위의 배경색을 그대로 써서 화면과 하나로 이어진다.
+// 창 단추(최소화·최대화·닫기)와 창 가장자리. 제목 표시줄을 따로 두지 않고
+// 페이지 머리말 위에 창 단추를 바로 얹는다 (assets/js/theme.js 와 짝).
 import 'dart:ffi' hide Size;
 import 'dart:io';
 
@@ -8,47 +9,63 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
-const double kTitleBarHeight = 30;
+const double kCaptionButtonWidth = 36;
 
-/// 페이지 맨 위 가장자리의 배경색 (assets/js/theme.js 가 알려 준다).
-/// 왼쪽(대화 목록)과 오른쪽(대화)의 색이 다르면 [split] 에서 갈린다. 같으면 0.
+/// 창 단추 세 개의 너비. 페이지는 머리말 오른쪽 끝을 이만큼 비워 둔다.
+const double kCaptionWidth = kCaptionButtonWidth * 3;
+
+/// 페이지 머리말의 모습 (theme.js 가 알려 준다).
 @immutable
-class PageColors {
-  const PageColors(this.left, this.right, [this.split = 0]);
+class PageChrome {
+  const PageChrome(this.color, [this.headerHeight = 0, this.spans = const []]);
 
-  static const light = PageColors(Color(0xFFFFFFFF), Color(0xFFFFFFFF));
-  static const dark = PageColors(Color(0xFF131314), Color(0xFF131314));
+  static const light = PageChrome(Color(0xFFFFFFFF));
+  static const dark = PageChrome(Color(0xFF131314));
 
-  final Color left, right;
-  final double split;
+  /// 창 단추 자리의 배경색
+  final Color color;
 
-  bool get isDark => _isDark(right);
+  /// 머리말을 찾지 못한 화면(로그인 등)에서는 0
+  final double headerHeight;
 
-  static const _prefsKey = 'pageColors';
+  /// 머리말에서 누를 것이 없는 가로 구간: [왼쪽, 오른쪽, 왼쪽, 오른쪽, …]
+  final List<double> spans;
 
-  /// 마지막으로 본 색. 없으면 Windows 설정을 따른다.
-  static PageColors load(SharedPreferences prefs, Brightness system) {
-    final v = prefs.getStringList(_prefsKey);
-    final left = v != null && v.length == 3 ? int.tryParse(v[0]) : null;
-    final right = left != null ? int.tryParse(v![1]) : null;
-    if (left == null || right == null) {
-      return system == Brightness.dark ? dark : light;
+  bool get isDark => _isDark(color);
+
+  /// 창 단추의 높이: 머리말과 같게 해서 아이콘이 머리말 내용과 한 줄에 놓이게 한다
+  double get captionHeight =>
+      headerHeight > 0 ? headerHeight.clamp(32.0, 72.0) : 40;
+
+  /// 창을 끌어 옮기는 손잡이로 쓸 구간들: (왼쪽, 너비)
+  Iterable<(double, double)> get dragSpans sync* {
+    for (var i = 0; i + 1 < spans.length; i += 2) {
+      if (spans[i + 1] > spans[i]) yield (spans[i], spans[i + 1] - spans[i]);
     }
-    return PageColors(Color(left), Color(right), double.tryParse(v![2]) ?? 0);
   }
 
-  void save(SharedPreferences prefs) => prefs.setStringList(
-      _prefsKey, ['${left.toARGB32()}', '${right.toARGB32()}', '$split']);
+  static const _prefsKey = 'pageChrome';
+
+  /// 마지막으로 본 색과 높이. 없으면 Windows 설정을 따른다.
+  static PageChrome load(SharedPreferences prefs, Brightness system) {
+    final v = prefs.getStringList(_prefsKey);
+    final color = v != null && v.length == 2 ? int.tryParse(v[0]) : null;
+    if (color == null) return system == Brightness.dark ? dark : light;
+    return PageChrome(Color(color), double.tryParse(v![1]) ?? 0);
+  }
+
+  void save(SharedPreferences prefs) =>
+      prefs.setStringList(_prefsKey, ['${color.toARGB32()}', '$headerHeight']);
 
   @override
   bool operator ==(Object other) =>
-      other is PageColors &&
-      other.left == left &&
-      other.right == right &&
-      other.split == split;
+      other is PageChrome &&
+      other.color == color &&
+      other.headerHeight == headerHeight &&
+      listEquals(other.spans, spans);
 
   @override
-  int get hashCode => Object.hash(left, right, split);
+  int get hashCode => Object.hash(color, headerHeight, Object.hashAll(spans));
 }
 
 bool _isDark(Color c) => c.computeLuminance() < 0.4;
@@ -99,76 +116,84 @@ void applyWindowFrameBrightness(bool dark) {
   }
 }
 
-class TitleBar extends StatelessWidget {
-  const TitleBar({
+/// 창을 최대화하거나 이전 크기로 되돌린다
+Future<void> toggleMaximize() async => await windowManager.isMaximized()
+    ? windowManager.unmaximize()
+    : windowManager.maximize();
+
+/// 창 오른쪽 위에 얹는 최소화 · 최대화 · 닫기 단추
+class WindowControls extends StatelessWidget {
+  const WindowControls({
     super.key,
-    required this.colors,
+    required this.chrome,
     required this.maximized,
   });
 
-  final PageColors colors;
+  final PageChrome chrome;
   final bool maximized;
 
   @override
   Widget build(BuildContext context) {
-    const fade = Duration(milliseconds: 200);
-    final split = colors.split;
-    final bar = SizedBox(
-      height: kTitleBarHeight,
-      child: Stack(
-        fit: StackFit.expand,
+    final height = chrome.captionHeight;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _CaptionButton(
+          glyph: _Glyph.minimize,
+          tooltip: '최소화',
+          background: chrome.color,
+          height: height,
+          onTap: windowManager.minimize,
+        ),
+        _CaptionButton(
+          glyph: maximized ? _Glyph.restore : _Glyph.maximize,
+          tooltip: maximized ? '이전 크기로' : '최대화',
+          background: chrome.color,
+          height: height,
+          onTap: toggleMaximize,
+        ),
+        _CaptionButton(
+          glyph: _Glyph.close,
+          tooltip: '닫기',
+          background: chrome.color,
+          height: height,
+          onTap: windowManager.close,
+        ),
+      ],
+    );
+  }
+}
+
+/// 창의 맨 위 가장자리. 제목 표시줄이 없어 화면이 창 맨 위까지 덮으므로
+/// 위쪽·위 모서리의 크기 조절을 직접 받는다.
+class TopResizeEdge extends StatelessWidget {
+  const TopResizeEdge({super.key});
+
+  static Widget _grip(ResizeEdge edge, MouseCursor cursor) => MouseRegion(
+        cursor: cursor,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onPanStart: (_) => windowManager.startResizing(edge),
+        ),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 4,
+      child: Row(
         children: [
-          AnimatedContainer(duration: fade, color: colors.right),
-          if (split > 0)
-            Positioned(
-              left: 0,
-              top: 0,
-              bottom: 0,
-              width: split,
-              child: AnimatedContainer(duration: fade, color: colors.left),
-            ),
-          Row(
-            children: [
-              const Expanded(
-                // 앱 이름은 바로 아래 페이지 머리말에 이미 있으므로 여기에는 적지 않는다.
-                // 빈 자리는 창을 끌어 옮기는 손잡이로만 쓴다.
-                child: DragToMoveArea(child: SizedBox.expand()),
-              ),
-              _CaptionButton(
-                glyph: _Glyph.minimize,
-                tooltip: '최소화',
-                background: colors.right,
-                onTap: windowManager.minimize,
-              ),
-              _CaptionButton(
-                glyph: maximized ? _Glyph.restore : _Glyph.maximize,
-                tooltip: maximized ? '이전 크기로' : '최대화',
-                background: colors.right,
-                onTap: maximized
-                    ? windowManager.unmaximize
-                    : windowManager.maximize,
-              ),
-              _CaptionButton(
-                glyph: _Glyph.close,
-                tooltip: '닫기',
-                background: colors.right,
-                onTap: windowManager.close,
-              ),
-            ],
+          SizedBox(
+            width: 8,
+            child: _grip(ResizeEdge.topLeft, SystemMouseCursors.resizeUpLeft),
+          ),
+          Expanded(child: _grip(ResizeEdge.top, SystemMouseCursors.resizeUp)),
+          SizedBox(
+            width: 8,
+            child: _grip(ResizeEdge.topRight, SystemMouseCursors.resizeUpRight),
           ),
         ],
       ),
-    );
-    if (maximized) return bar;
-    // 제목 표시줄이 창의 맨 위를 덮으므로 위쪽 가장자리의 크기 조절을 직접 받는다
-    return DragToResizeArea(
-      resizeEdgeSize: 5,
-      enableResizeEdges: const [
-        ResizeEdge.top,
-        ResizeEdge.topLeft,
-        ResizeEdge.topRight,
-      ],
-      child: bar,
     );
   }
 }
@@ -181,12 +206,14 @@ class _CaptionButton extends StatefulWidget {
     required this.glyph,
     required this.tooltip,
     required this.background,
+    required this.height,
     required this.onTap,
   });
 
   final _Glyph glyph;
   final String tooltip;
   final Color background;
+  final double height;
   final VoidCallback onTap;
 
   @override
@@ -230,7 +257,7 @@ class _CaptionButtonState extends State<_CaptionButton>
             widget.onTap();
           },
           child: CustomPaint(
-            size: const Size(46, kTitleBarHeight),
+            size: Size(kCaptionButtonWidth, widget.height),
             painter: _CaptionButtonPainter(
               glyph: widget.glyph,
               dark: _isDark(widget.background),
@@ -285,8 +312,8 @@ class _CaptionButtonPainter extends CustomPainter {
       final strength = t * (pressed.value ? 0.6 : 1);
       canvas.drawPath(
         path,
-        stroke(_glow.withValues(alpha: 0.38 * strength), 5)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+        stroke(_glow.withValues(alpha: 0.38 * strength), 4)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
       );
       canvas.drawPath(
         path,
@@ -302,35 +329,36 @@ class _CaptionButtonPainter extends CustomPainter {
           ..isAntiAlias = glyph != _Glyph.minimize);
   }
 
-  /// 10×10 그림을 가운데에. 선이 흐려지지 않게 픽셀 가운데(.5)에 맞춘다.
+  /// 8×8 그림을 가운데에. 선이 흐려지지 않게 픽셀 가운데(.5)에 맞춘다.
   Path _glyphPath(Size size) {
-    final x = (size.width / 2).floorToDouble() - 5 + 0.5;
-    final y = (size.height / 2).floorToDouble() - 5 + 0.5;
-    const radius = Radius.circular(1.5);
+    const s = 8.0;
+    final x = (size.width / 2).floorToDouble() - s / 2 + 0.5;
+    final y = (size.height / 2).floorToDouble() - s / 2 + 0.5;
+    const radius = Radius.circular(1.2);
     switch (glyph) {
       case _Glyph.minimize:
         return Path()
-          ..moveTo(x, y + 5)
-          ..lineTo(x + 10, y + 5);
+          ..moveTo(x, y + s / 2)
+          ..lineTo(x + s, y + s / 2);
       case _Glyph.maximize:
         return Path()
           ..addRRect(
-              RRect.fromRectAndRadius(Rect.fromLTWH(x, y, 10, 10), radius));
+              RRect.fromRectAndRadius(Rect.fromLTWH(x, y, s, s), radius));
       case _Glyph.restore:
         return Path()
-          ..addRRect(
-              RRect.fromRectAndRadius(Rect.fromLTWH(x, y + 2, 8, 8), radius))
+          ..addRRect(RRect.fromRectAndRadius(
+              Rect.fromLTWH(x, y + 2, s - 2, s - 2), radius))
           // 뒤에 겹친 창: 위쪽과 오른쪽 변만 보인다
           ..moveTo(x + 2.5, y)
-          ..lineTo(x + 8.5, y)
-          ..arcToPoint(Offset(x + 10, y + 1.5), radius: radius)
-          ..lineTo(x + 10, y + 7.5);
+          ..lineTo(x + s - 1.2, y)
+          ..arcToPoint(Offset(x + s, y + 1.2), radius: radius)
+          ..lineTo(x + s, y + s - 2.5);
       case _Glyph.close:
         return Path()
           ..moveTo(x, y)
-          ..lineTo(x + 10, y + 10)
-          ..moveTo(x + 10, y)
-          ..lineTo(x, y + 10);
+          ..lineTo(x + s, y + s)
+          ..moveTo(x + s, y)
+          ..lineTo(x, y + s);
     }
   }
 
