@@ -192,6 +192,22 @@
   const ocrQueue = [];
   let ocrBusy = false;
 
+  // 겹치는 글자의 글꼴: Windows 는 맑은 고딕, macOS 는 Apple SD 산돌고딕 Neo
+  const OCR_FONT = '"Malgun Gothic","Apple SD Gothic Neo","Segoe UI",sans-serif';
+  const metricCtx = document.createElement('canvas').getContext('2d');
+  // 글꼴의 윗선(ascent)과, 이 글이 실제로 칠해지는 높이(잉크)를 100px 기준으로 잰다
+  const inkMetrics = (text) => {
+    try {
+      metricCtx.font = '100px ' + OCR_FONT;
+      const m = metricCtx.measureText(text);
+      const ink = (m.actualBoundingBoxAscent || 0) + (m.actualBoundingBoxDescent || 0);
+      if (!m.fontBoundingBoxAscent || ink <= 0) return null;
+      return { fa: m.fontBoundingBoxAscent, aa: m.actualBoundingBoxAscent, ink };
+    } catch (e) {
+      return null;
+    }
+  };
+
   const hasOcr = () => !!(window.flutter_inappwebview && window.flutter_inappwebview.callHandler);
 
   try {
@@ -200,7 +216,10 @@
       '.gm-ocr-layer{position:absolute;overflow:hidden;container-type:size;z-index:1;pointer-events:none}' +
       '.gm-ocr-line{position:absolute;white-space:pre;color:transparent;line-height:1;cursor:text;' +
       'user-select:text;-webkit-user-select:text;pointer-events:auto;transform-origin:0 0;' +
-      'font-family:"Malgun Gothic","Segoe UI",sans-serif}' +
+      'font-family:' + OCR_FONT + '}' +
+      '.gm-ocr-word,.gm-ocr-text{display:inline-block;white-space:pre}' +
+      '.gm-ocr-text{transform-origin:0 0}' +
+      '.gm-ocr-gap{font-size:0}' +
       '.gm-ocr-line::selection{background:rgba(26,115,232,.4);color:transparent}' +
       '.gm-ocr-hit{position:absolute;pointer-events:auto;cursor:pointer;border-radius:3px;' +
       'background:rgba(26,115,232,.25);box-shadow:0 0 0 1px rgba(26,115,232,.75)}' +
@@ -246,6 +265,10 @@
 
   const pct = (v, total) => (v / total * 100) + '%';
 
+  const cq = (v, total, unit) => (v / total * 100) + unit;
+
+  // 줄마다 span 하나(복사할 때 한 줄로 이어지게)를 두고, 그 안의 낱말을 사진 속 낱말 자리에
+  // 하나씩 맞춰 놓는다. 글꼴이 달라 줄 전체를 한 번에 늘이면 낱말이 조금씩 밀리기 때문이다.
   const buildLayer = (img, result) => {
     const layer = document.createElement('div');
     layer.className = 'gm-ocr-layer';
@@ -254,16 +277,48 @@
       const words = line.words || [];
       if (!words.length) continue;
       const x0 = Math.min(...words.map((w) => w.x)), y0 = Math.min(...words.map((w) => w.y));
-      const x1 = Math.max(...words.map((w) => w.x + w.w)), y1 = Math.max(...words.map((w) => w.y + w.h));
+      const y1 = Math.max(...words.map((w) => w.y + w.h));
       const { text, spans } = joinWords(words);
 
       const el = document.createElement('span');
       el.className = 'gm-ocr-line';
-      el.textContent = text;
       el.style.left = pct(x0, W);
-      el.style.top = pct(y0, H);
-      el.style.fontSize = ((y1 - y0) / H * 100) + 'cqh';
-      el.dataset.w = String((x1 - x0) / W); // 층 너비에 대한 비율: 나중에 가로로 맞춘다
+      // 글자 크기: 겹친 글자가 칠해지는 높이를 사진 속 글자 높이에 맞춘다.
+      // 위치: 글꼴 윗선에서 글자 꼭대기까지의 빈자리만큼 올린다.
+      const m = inkMetrics(text);
+      if (m) {
+        const k = (y1 - y0) / m.ink; // 100px 글꼴 기준 배율
+        el.style.fontSize = cq(100 * k, H, 'cqh');
+        el.style.lineHeight = 'normal';
+        el.style.top = pct(y0 - (m.fa - m.aa) * k, H);
+      } else {
+        el.style.fontSize = cq(y1 - y0, H, 'cqh');
+        el.style.top = pct(y0, H);
+      }
+      let end = x0;
+      words.forEach((w, i) => {
+        if (i > 0 && text[spans[i][0] - 1] === ' ') {
+          const gap = document.createElement('span');
+          gap.className = 'gm-ocr-gap';
+          gap.textContent = ' ';
+          el.appendChild(gap);
+        }
+        const box = document.createElement('span');
+        box.className = 'gm-ocr-word';
+        box.style.width = cq(w.w, W, 'cqw');
+        box.style.marginLeft = cq(w.x - end, W, 'cqw');
+        const t = document.createElement('span');
+        t.className = 'gm-ocr-text';
+        t.textContent = w.t;
+        box.appendChild(t);
+        el.appendChild(box);
+        end = w.x + w.w;
+      });
+      // 여러 줄을 복사하면 줄이 나뉘게 (보이지 않는 줄바꿈)
+      const br = document.createElement('span');
+      br.className = 'gm-ocr-gap';
+      br.textContent = '\n';
+      el.appendChild(br);
       layer.appendChild(el);
 
       for (const [s, e, type, value] of detect(text)) {
@@ -286,20 +341,21 @@
     return layer;
   };
 
-  // 층을 이미지 상자에 맞추고, 각 줄의 글자 너비를 실제 글자 너비에 맞춘다
+  // 층을 이미지 상자에 맞추고, 낱말마다 글자 너비를 사진 속 낱말 너비에 맞춘다
   const fitLayer = (img, layer) => {
     layer.style.left = img.offsetLeft + 'px';
     layer.style.top = img.offsetTop + 'px';
     layer.style.width = img.offsetWidth + 'px';
     layer.style.height = img.offsetHeight + 'px';
-    const lw = img.offsetWidth;
-    if (!lw) return;
-    for (const el of layer.querySelectorAll('.gm-ocr-line')) {
-      el.style.transform = '';
-      const natural = el.offsetWidth; // 배치 크기 (확대 배율과 무관)
-      const want = Number(el.dataset.w) * lw;
-      if (natural > 0 && want > 0) el.style.transform = 'scaleX(' + (want / natural) + ')';
-    }
+    if (!img.offsetWidth) return;
+    const texts = [...layer.querySelectorAll('.gm-ocr-text')];
+    texts.forEach((t) => { t.style.transform = ''; });
+    // 모두 잰 다음 한꺼번에 바꾼다 (재고 바꾸기를 번갈아 하면 매번 배치를 다시 계산한다)
+    const sizes = texts.map((t) => [t.offsetWidth, t.parentElement.offsetWidth]);
+    texts.forEach((t, i) => {
+      const [natural, want] = sizes[i];
+      if (natural > 0 && want > 0) t.style.transform = 'scaleX(' + (want / natural) + ')';
+    });
   };
 
   const resizeObserver = new ResizeObserver((list) => {

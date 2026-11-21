@@ -77,6 +77,7 @@ class AppDelegate: FlutterAppDelegate {
     }
 
     let W = Double(cg.width), H = Double(cg.height)
+    let gray = Gray(cg)
     // Vision 상자: 0~1 비율, 원점이 왼쪽 아래 → 픽셀, 원점 왼쪽 위
     func box(_ b: CGRect) -> [String: Double] {
       return ["x": Double(b.minX) * W, "y": (1 - Double(b.maxY)) * H,
@@ -86,6 +87,9 @@ class AppDelegate: FlutterAppDelegate {
     var lines: [[String: Any]] = []
     for obs in request.results ?? [] {
       guard let top = obs.topCandidates(1).first else { continue }
+      // Vision 의 줄 상자는 줄에 따라 글자보다 위아래로 넉넉히 잡힐 때가 있어,
+      // 상자 안에서 글자가 실제로 칠해진 행을 찾아 세로 범위를 좁힌다.
+      let lineBox = gray?.tighten(obs.boundingBox) ?? obs.boundingBox
       let s = top.string
       var words: [[String: Any]] = []
       // 띄어쓰기로 나눈 낱말마다 위치를 구한다 (페이지가 낱말 단위로 인식 결과를 쓴다)
@@ -94,9 +98,14 @@ class AppDelegate: FlutterAppDelegate {
         guard let start = s[idx...].firstIndex(where: { !$0.isWhitespace }) else { break }
         let end = s[start...].firstIndex(where: { $0.isWhitespace }) ?? s.endIndex
         let word = String(s[start..<end])
+        // 높이는 줄 상자를 쓴다. 낱말 상자는 가로 위치는 정확하지만 세로가 들쭉날쭉하고
+        // 글자보다 크게 잡히는 일이 많아, 겹친 글자가 아래로 밀려 보였다.
         var rect = obs.boundingBox
         if let wb = try? top.boundingBox(for: start..<end) {
-          rect = wb.boundingBox
+          let b = wb.boundingBox
+          rect = CGRect(x: b.minX, y: lineBox.minY, width: b.width, height: lineBox.height)
+        } else {
+          rect = lineBox
         }
         var entry: [String: Any] = box(rect)
         entry["t"] = word
@@ -107,4 +116,78 @@ class AppDelegate: FlutterAppDelegate {
     }
     return encode(["ok": true, "w": W, "h": H, "lines": lines])
   }
+
+  /// 밝기만 담은 사진. 글자 줄 상자의 세로 범위를 실제 글자에 맞춰 좁히는 데 쓴다.
+  struct Gray {
+    let w: Int, h: Int
+    let px: [UInt8]
+
+    init?(_ cg: CGImage) {
+      let w = cg.width, h = cg.height
+      guard w > 0, h > 0 else { return nil }
+      var buf = [UInt8](repeating: 0, count: w * h)
+      let ok = buf.withUnsafeMutableBytes { raw -> Bool in
+        guard let ctx = CGContext(data: raw.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: w, space: CGColorSpaceCreateDeviceGray(),
+                                  bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return true
+      }
+      guard ok else { return nil }
+      self.w = w
+      self.h = h
+      px = buf
+    }
+
+    /// [b] 는 Vision 비율 좌표(원점 왼쪽 아래). 같은 좌표계로 좁힌 상자를 돌려준다.
+    func tighten(_ b: CGRect) -> CGRect {
+      // 픽셀 행: 0 이 맨 위
+      let x0 = max(0, Int(b.minX * CGFloat(w))), x1 = min(w, Int(ceil(b.maxX * CGFloat(w))))
+      let pad = Int(b.height * CGFloat(h) * 0.15)
+      let top = max(0, Int((1 - b.maxY) * CGFloat(h)) - pad)
+      let bottom = min(h, Int(ceil((1 - b.minY) * CGFloat(h))) + pad)
+      guard x1 - x0 > 4, bottom - top > 4 else { return b }
+      // 행마다 밝기 폭(가장 밝은 점 - 가장 어두운 점). 글자가 지나는 행은 폭이 크다.
+      var ranges = [Int](repeating: 0, count: bottom - top)
+      let step = max(1, (x1 - x0) / 400)
+      for y in top..<bottom {
+        var lo = 255, hi = 0
+        let row = y * w
+        var x = x0
+        while x < x1 {
+          let v = Int(px[row + x])
+          if v < lo { lo = v }
+          if v > hi { hi = v }
+          x += step
+        }
+        ranges[y - top] = hi - lo
+      }
+      guard let peak = ranges.max(), peak >= 40 else { return b }
+      let limit = peak * 35 / 100
+      // Vision 상자 가운데에서 위아래로 넓혀 가며, 글자가 끊기는 행을 찾는다
+      let mid = (Int((1 - b.midY) * CGFloat(h)) - top).clamped(0, ranges.count - 1)
+      guard let seed = (0..<ranges.count).min(by: { abs($0 - mid) + (ranges[$0] >= limit ? 0 : 10_000) <
+                                                    abs($1 - mid) + (ranges[$1] >= limit ? 0 : 10_000) }),
+            ranges[seed] >= limit else { return b }
+      // 글자 사이 작은 틈(받침과 모음 사이 등)은 건너뛴다
+      let gapAllowed = max(2, Int(b.height * CGFloat(h) * 0.12))
+      func extend(_ from: Int, _ dir: Int) -> Int {
+        var last = from, i = from, gap = 0
+        while i + dir >= 0 && i + dir < ranges.count {
+          i += dir
+          if ranges[i] >= limit { last = i; gap = 0 } else { gap += 1; if gap > gapAllowed { break } }
+        }
+        return last
+      }
+      let a = extend(seed, -1) + top, z = extend(seed, 1) + top + 1
+      let newH = CGFloat(z - a) / CGFloat(h)
+      // 너무 크게 바뀌면(사진 배경 탓일 수 있음) Vision 상자를 그대로 쓴다
+      if newH < b.height * 0.5 || newH > b.height * 1.3 { return b }
+      return CGRect(x: b.minX, y: 1 - CGFloat(z) / CGFloat(h), width: b.width, height: newH)
+    }
+  }
+}
+
+private extension Int {
+  func clamped(_ lo: Int, _ hi: Int) -> Int { Swift.min(Swift.max(self, lo), hi) }
 }
