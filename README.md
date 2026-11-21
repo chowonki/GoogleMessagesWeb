@@ -1,6 +1,6 @@
 # Google 메시지 웹 (데스크톱 앱)
 
-[Google 메시지 웹 버전](https://messages.google.com/web/)을 Windows 데스크톱 앱으로 감싼 Flutter 프로그램입니다.
+[Google 메시지 웹 버전](https://messages.google.com/web/)을 Windows·macOS 데스크톱 앱으로 감싼 Flutter 프로그램입니다.
 
 | 경로 | 내용 |
 |---|---|

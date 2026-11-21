@@ -1,0 +1,9 @@
+// Application-level settings for the Runner target.
+
+// 앱 이름 (Finder·Dock·메뉴 막대에 표시)
+PRODUCT_NAME = Google Messages Web
+
+// 이전 앱(com.chowonki.googlemessages)과 따로 설치되도록 다른 식별자를 쓴다
+PRODUCT_BUNDLE_IDENTIFIER = com.chowonki.googlemessagesweb
+
+PRODUCT_COPYRIGHT = Copyright © 2026 chowonki. All rights reserved.

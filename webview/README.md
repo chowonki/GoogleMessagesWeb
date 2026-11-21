@@ -1,18 +1,18 @@
 # Google 메시지 웹 (WebView 앱)
 
-[Google 메시지 웹 버전](https://messages.google.com/web/)을 시스템 WebView(Windows: WebView2)로 감싼
+[Google 메시지 웹 버전](https://messages.google.com/web/)을 시스템 WebView(Windows: WebView2, macOS: WKWebView)로 감싼
 데스크톱 앱입니다. Google 계정 로그인은 WebView 안에서 그대로 진행됩니다.
 
 ## 기능
 
 - **트레이**: 닫기 버튼으로 트레이에 숨기기, Windows 시작 시 자동 실행, 항상 위에 표시
 - **알림**: 웹 알림을 Windows 알림으로 표시, 클릭하면 해당 대화 열기
-- **작업 표시줄**: 안 읽은 개수 배지, 새 알림 시 깜빡임
+- **작업 표시줄**: 안 읽은 개수 배지, 새 알림 시 깜빡임 (macOS: Dock 배지, 창이 뒤에 있으면 Dock 아이콘 튕김)
 - **우클릭 메뉴**: 대화 목록·말풍선·대화 상단 막대를 우클릭하면 그 항목의 ⋮ 메뉴를 마우스 위치에 표시
 - **라이브 텍스트**
   - 말풍선 글과 이미지 속 글자에서 전화번호·계좌번호·인증번호·이메일·운송장 번호를 인식해 표시, 클릭하면 복사
   - 이미지 속 글자는 드래그로 선택 가능
-  - 이미지 글자 인식은 Windows 내장 OCR(`Windows.Media.Ocr`)로 이 PC 안에서만 처리
+  - 이미지 글자 인식은 Windows 내장 OCR(`Windows.Media.Ocr`), macOS 내장 Vision 으로 이 컴퓨터 안에서만 처리
 - **이미지 확대 보기**: 휠(확대/축소), 더블클릭(2.5배 ↔ 원래 크기), 끌기(이동), `+` `-` `0` 키
 - **Windows 11**: 제목 표시줄 Mica 재질, 다크 모드를 따르는 트레이 메뉴, 링크 주소 미리보기(상태 표시줄) 숨김
 
@@ -26,6 +26,8 @@
 | `assets/js/live_text.js` | 라이브 텍스트, 이미지 확대 보기 |
 | `ocr/GmOcr.cs` | 이미지 글자 인식 보조 프로그램 소스 (`assets/ocr/gm_ocr.exe` 로 빌드) |
 | `windows/runner/` | Mica 제목 표시줄, 다크 모드 메뉴 |
+| `macos/Runner/AppDelegate.swift` | 이미지 글자 인식(Vision), Dock 아이콘 다시 열기·튕김 |
+| `tools/build_macos.sh` | macOS 빌드·서명·.dmg 만들기 |
 | `../packages/flutter_inappwebview_windows` | 상태 표시줄을 끄도록 한 줄 고친 플러그인 사본 |
 
 ## 빌드 (Windows)
@@ -46,9 +48,21 @@ flutter build windows --release
 
 버전은 `pubspec.yaml` 의 `version` 과 `installer/windows.iss` 의 `AppVersion` 두 곳을 함께 올립니다.
 
+## 빌드 (macOS)
+
+필요한 것: Flutter, Xcode.
+
+```bash
+tools/build_macos.sh          # → dist/GoogleMessagesWeb-<버전>.dmg
+tools/build_macos.sh --open   # 빌드 뒤 바로 실행
+```
+
+개발자 인증서 없이 임시 서명(ad-hoc)을 하므로, 다른 Mac 에서 처음 열 때는 Finder 에서 앱을 우클릭 → **열기**로 한 번 허용해야 합니다.
+
 ## 참고
 
 - 안 읽은 개수 배지는 페이지 제목의 `(3)` 같은 표기를 읽습니다.
 - 우클릭 메뉴와 라이브 텍스트는 Google 메시지 웹의 화면 구조(요소 이름)에 기대고 있어, Google 이 화면을
   바꾸면 `assets/js` 의 선택자를 고쳐야 할 수 있습니다.
-- Windows 전용입니다. (macOS 는 빌드·확인한 적이 없어 틀을 지웠습니다. 필요하면 `flutter create --platforms=macos .` 로 다시 만듭니다.)
+- macOS 에서는 "Windows 시작 시 자동 실행" 메뉴가 없습니다. 로그인할 때 열려면 시스템 설정 → 일반 → 로그인 항목에 앱을 추가하세요.
+- macOS 메뉴 막대 아이콘은 누르면 메뉴가 뜹니다(열기·새로고침·항상 위에 표시·종료).

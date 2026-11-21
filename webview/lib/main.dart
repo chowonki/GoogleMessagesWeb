@@ -19,8 +19,16 @@ import 'package:windows_taskbar/windows_taskbar.dart';
 const String kAppName = 'Google 메시지';
 const String kHomeUrl = 'https://messages.google.com/web/';
 
-/// 이미지 글자 인식: 앱과 함께 들어 있는 보조 프로그램(gm_ocr.exe, Windows 내장 OCR)을
-/// 이미지마다 한 번 실행해 결과(JSON 한 줄)를 받는다. 모두 이 PC 안에서 처리된다.
+/// macOS 의 WebView(WKWebView)는 Safari 와 같은 엔진이므로 Safari 로 알린다.
+/// (기본 표기로는 Google 로그인이 "안전하지 않은 브라우저"로 막힐 수 있다)
+const String kSafariUA =
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 '
+    '(KHTML, like Gecko) Version/18.6 Safari/605.1.15';
+
+/// 이미지 글자 인식. 모두 이 컴퓨터 안에서 처리된다.
+/// - Windows: 앱과 함께 들어 있는 보조 프로그램(gm_ocr.exe, Windows 내장 OCR)을
+///   이미지마다 한 번 실행해 결과(JSON 한 줄)를 받는다.
+/// - macOS: 앱 쪽 코드(AppDelegate.swift)가 내장 Vision 으로 읽어 같은 형식으로 돌려준다.
 class ImageOcr {
   String? _helper; // 한 번 찾아 두는 보조 프로그램 경로
   bool _unavailable = false;
@@ -43,7 +51,7 @@ class ImageOcr {
   /// [dataUrl] 은 "data:image/png;base64,..." 형태. 실패하면 null.
   Future<Map<String, dynamic>?> recognize(String dataUrl) async {
     if (_unavailable) return null;
-    final helper = _helper ??= _findHelper();
+    final helper = Platform.isMacOS ? '' : _helper ??= _findHelper();
     if (helper == null) {
       _unavailable = true;
       return null;
@@ -58,6 +66,13 @@ class ImageOcr {
       file = File('${dir.path}${sep}gm_ocr_${pid}_${_seq++}.$ext');
       await file.writeAsBytes(base64Decode(dataUrl.substring(comma + 1)),
           flush: true);
+      if (Platform.isMacOS) {
+        final json = await const MethodChannel('gm/ocr')
+            .invokeMethod<String>('recognize', file.path)
+            .timeout(const Duration(seconds: 20));
+        if (json == null || json.isEmpty) return null;
+        return jsonDecode(json) as Map<String, dynamic>;
+      }
       final result = await Process.run(helper, [file.path],
               stdoutEncoding: utf8, stderrEncoding: utf8)
           .timeout(const Duration(seconds: 20));
@@ -268,6 +283,8 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
   Future<void> _initTray() async {
     await trayManager.setIcon(
       Platform.isWindows ? 'assets/tray.ico' : 'assets/tray.png',
+      // macOS 메뉴 막대: 검은 그림을 밝기에 맞춰 자동으로 칠한다
+      isTemplate: Platform.isMacOS,
     );
     await trayManager.setToolTip(kAppName);
     if (Platform.isWindows) _autostart = await autostartEnabled();
@@ -283,7 +300,9 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
       MenuItem.separator(),
       MenuItem.checkbox(
         key: 'closeToTray',
-        label: '닫기 버튼으로 트레이에 숨기기',
+        label: Platform.isMacOS
+            ? '창을 닫아도 메뉴 막대에 남기기'
+            : '닫기 버튼으로 트레이에 숨기기',
         checked: _closeToTray,
       ),
       if (Platform.isWindows)
@@ -302,8 +321,10 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
     ]));
   }
 
+  // macOS 메뉴 막대 아이콘은 누르면 메뉴가 뜨는 것이 관례다
   @override
-  void onTrayIconMouseDown() => showMainWindow();
+  void onTrayIconMouseDown() =>
+      Platform.isMacOS ? trayManager.popUpContextMenu() : showMainWindow();
 
   @override
   void onTrayIconRightMouseDown() => trayManager.popUpContextMenu();
@@ -339,8 +360,16 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
   /// 안 읽은 개수를 작업 표시줄 아이콘 위에 빨간 배지로 얹는다.
   /// 창이 숨겨져 있으면 작업 표시줄 단추가 없으므로 다시 보일 때 얹는다.
   Future<void> _applyBadge({bool force = false}) async {
-    if (!Platform.isWindows) return;
     if (!force && _badgeShown == _unread) return;
+    if (Platform.isMacOS) {
+      // macOS: Dock 아이콘의 빨간 배지
+      try {
+        await windowManager.setBadgeLabel(_unread > 0 ? '$_unread' : '');
+        _badgeShown = _unread;
+      } catch (_) {}
+      return;
+    }
+    if (!Platform.isWindows) return;
     try {
       if (_unread <= 0) {
         await WindowsTaskbar.resetOverlayIcon();
@@ -357,8 +386,16 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
     }
   }
 
-  /// 창이 앞에 있지 않으면 작업 표시줄 단추를 깜빡인다
+  /// 창이 앞에 있지 않으면 작업 표시줄 단추를 깜빡인다 (macOS: Dock 아이콘을 한 번 튕긴다)
   Future<void> _flash() async {
+    if (Platform.isMacOS) {
+      try {
+        if (!await windowManager.isFocused()) {
+          await const MethodChannel('gm/app').invokeMethod('bounce');
+        }
+      } catch (_) {}
+      return;
+    }
     if (!Platform.isWindows) return;
     try {
       if (await windowManager.isFocused()) return;
@@ -494,6 +531,10 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
               useShouldOverrideUrlLoading: true,
               javaScriptCanOpenWindowsAutomatically: true,
               supportMultipleWindows: true,
+              userAgent: Platform.isMacOS ? kSafariUA : '',
+              // macOS: 트랙패드로 앞뒤 넘기기, 링크 길게 누르기 미리보기 끄기
+              allowsBackForwardNavigationGestures: false,
+              allowsLinkPreview: false,
             ),
             onWebViewCreated: (c) {
               _web = c;
