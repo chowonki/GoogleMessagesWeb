@@ -139,8 +139,20 @@ void trace(String what) {
 /// 실행 중인 앱을 끝낸다 (창이 만들어진 뒤에 채워진다)
 Future<void> Function()? quitApp;
 
+/// 설정 키: 하드웨어 가속(GPU)으로 화면을 그린다. 기본은 켜짐.
+const String kHardwareAccelerationKey = 'hardwareAcceleration';
+
+/// WebView2 에 넘기는 옵션
+String _browserArguments({required bool hardwareAcceleration}) => [
+      // Sec-CH-UA 의 "WebView2" 표기로 Google 로그인이 막히는 것을 막는다
+      '--disable-features=UserAgentClientHint',
+      // 끄면 GPU 를 쓰지 않고 CPU 로만 그린다 (그래픽 드라이버 문제로 화면이 깨지거나
+      // 깜빡일 때를 위한 것). 켜 두면 WebView2 기본대로 GPU 를 쓴다.
+      if (!hardwareAcceleration) '--disable-gpu',
+    ].join(' ');
+
 /// Windows: WebView2 환경. 런타임이 없으면 [webViewAvailable] 이 false 가 된다.
-Future<void> _createWebViewEnvironment() async {
+Future<void> _createWebViewEnvironment(SharedPreferences prefs) async {
   if (!Platform.isWindows) return;
   try {
     // 폴더 경로와 런타임 확인은 서로 기다릴 필요가 없다
@@ -151,7 +163,9 @@ Future<void> _createWebViewEnvironment() async {
         settings: WebViewEnvironmentSettings(
           userDataFolder:
               '${(await support).path}${Platform.pathSeparator}WebView2',
-          additionalBrowserArguments: '--disable-features=UserAgentClientHint',
+          additionalBrowserArguments: _browserArguments(
+              hardwareAcceleration:
+                  prefs.getBool(kHardwareAccelerationKey) ?? true),
         ),
       );
     }
@@ -183,10 +197,11 @@ Future<void> main(List<String> args) async {
 
   // 서로 기다릴 필요가 없는 준비는 한꺼번에 시작한다.
   // 창은 WebView 를 기다리지 않고 먼저 띄운다.
-  final webViewReady = _createWebViewEnvironment();
+  final prefsReady = SharedPreferences.getInstance();
+  // WebView 옵션(하드웨어 가속)이 설정에 있으므로 설정을 읽자마자 시작한다
+  final webViewReady = prefsReady.then(_createWebViewEnvironment);
   final scripts =
       Future.wait(kPageScriptAssets.map((a) => rootBundle.loadString(a)));
-  final prefsReady = SharedPreferences.getInstance();
   // 알림은 한참 뒤에야 쓰이므로 기다리지 않는다
   unawaited(localNotifier.setup(
     appName: kAppName,
@@ -360,6 +375,7 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
     windowManager.removeListener(this);
     trayManager.removeListener(this);
     _controlsTimer?.cancel();
+    _saveTimer?.cancel();
     super.dispose();
   }
 
@@ -376,6 +392,9 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
   }
 
   bool _autostart = false;
+
+  bool get _hardwareAcceleration =>
+      prefs.getBool(kHardwareAccelerationKey) ?? true;
 
   Future<void> _updateTrayMenu() async {
     await trayManager.setContextMenu(Menu(items: [
@@ -398,6 +417,12 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
         label: '항상 위에 표시',
         checked: _alwaysOnTop,
       ),
+      if (Platform.isWindows)
+        MenuItem.checkbox(
+          key: 'hardwareAcceleration',
+          label: '하드웨어 가속 사용 (다시 시작)',
+          checked: _hardwareAcceleration,
+        ),
       MenuItem.separator(),
       MenuItem(key: 'quit', label: '종료'),
     ]));
@@ -433,9 +458,29 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
         prefs.setBool('alwaysOnTop', _alwaysOnTop);
         windowManager.setAlwaysOnTop(_alwaysOnTop);
         _updateTrayMenu();
+      case 'hardwareAcceleration':
+        _setHardwareAcceleration(!_hardwareAcceleration);
       case 'quit':
         _quit();
     }
+  }
+
+  /// 하드웨어 가속은 WebView 를 만들 때 정해지므로, 바꾸면 앱을 다시 시작한다.
+  Future<void> _setHardwareAcceleration(bool on) async {
+    await prefs.setBool(kHardwareAccelerationKey, on);
+    await _restart();
+  }
+
+  /// 앱을 다시 시작한다. 새 프로세스는 이 프로세스가 끝나기를 기다렸다가 뜬다
+  /// (runner/main.cpp 의 --wait-for-exit). 창이 숨겨져 있었으면 다시 숨긴 채로 뜬다.
+  Future<void> _restart() async {
+    final visible = await windowManager.isVisible();
+    await Process.start(
+      Platform.resolvedExecutable,
+      ['--wait-for-exit=$pid', if (!visible) '--hidden'],
+      mode: ProcessStartMode.detached,
+    );
+    await _quit();
   }
 
   // ───────── 작업 표시줄 배지 · 깜빡임 (Windows) ─────────
@@ -508,11 +553,18 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
     ]);
   }
 
-  @override
-  void onWindowResized() => _saveBounds();
+  // 창을 끌거나 크기를 바꾸는 동안 이 이벤트가 1초에 수십 번 온다: 멈춘 뒤 한 번만 저장한다
+  Timer? _saveTimer;
+  void _saveBoundsSoon() {
+    _saveTimer?.cancel();
+    _saveTimer = Timer(const Duration(milliseconds: 400), _saveBounds);
+  }
 
   @override
-  void onWindowMoved() => _saveBounds();
+  void onWindowResized() => _saveBoundsSoon();
+
+  @override
+  void onWindowMoved() => _saveBoundsSoon();
 
   @override
   void onWindowMaximize() {
@@ -540,6 +592,7 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
     if (_quitting) return;
     _quitting = true;
     trace('quit: begin');
+    _saveTimer?.cancel();
     await _saveBounds();
     trace('quit: bounds saved');
     // 눈에 보이는 것(창, 트레이 아이콘)부터 바로 치운다

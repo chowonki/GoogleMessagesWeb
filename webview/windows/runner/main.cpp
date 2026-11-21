@@ -2,6 +2,8 @@
 #include <flutter/flutter_view_controller.h>
 #include <windows.h>
 
+#include <cstdlib>
+
 #include "flutter_window.h"
 #include "utils.h"
 
@@ -78,6 +80,26 @@ static bool HandOffToRunningInstance(const std::vector<std::string>& args) {
   return false;
 }
 
+// "--wait-for-exit=<pid>": the app restarting itself (e.g. after changing the
+// hardware acceleration option). Wait for the old process to end, so this one
+// starts as the only instance instead of handing off to the one that's leaving.
+static void WaitForPreviousInstance(std::vector<std::string>& args) {
+  const std::string kFlag = "--wait-for-exit=";
+  for (auto it = args.begin(); it != args.end(); ++it) {
+    if (it->rfind(kFlag, 0) != 0) continue;
+    const DWORD pid = static_cast<DWORD>(
+        std::strtoul(it->c_str() + kFlag.size(), nullptr, 10));
+    args.erase(it);
+    if (pid == 0) return;
+    HANDLE process = ::OpenProcess(SYNCHRONIZE, FALSE, pid);
+    if (process) {
+      ::WaitForSingleObject(process, 10000);
+      ::CloseHandle(process);
+    }
+    return;
+  }
+}
+
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
   // Attach to console when present (e.g., 'flutter run') or create a
@@ -88,6 +110,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   std::vector<std::string> command_line_arguments =
       GetCommandLineArguments();
+  WaitForPreviousInstance(command_line_arguments);
   if (HandOffToRunningInstance(command_line_arguments)) {
     return EXIT_SUCCESS;
   }
