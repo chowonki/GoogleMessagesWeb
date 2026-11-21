@@ -102,6 +102,7 @@ const List<String> kPageScriptAssets = [
   'assets/js/notification.js',
   'assets/js/context_menu.js',
   'assets/js/live_text.js',
+  'assets/js/contact_number.js',
 ];
 List<String> pageScripts = const [];
 
@@ -278,6 +279,8 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
   bool _loading = true;
   bool _maximized = false;
   bool _pageReady = false; // 페이지가 머리말 모습을 알려 왔다
+  bool _controlsShown = false; // 창 단추를 보여 준다 (시작 화면에서는 숨긴다)
+  Timer? _controlsTimer;
   String? _loadError;
 
   SharedPreferences get prefs => widget.prefs;
@@ -291,6 +294,7 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
     onMainWindowShown = () => _applyBadge(force: true);
     trayManager.addListener(this);
     _initTray();
+    _showControlsAfter(_splashLimit);
     windowManager.isMaximized().then((v) {
       if (mounted && v != _maximized) setState(() => _maximized = v);
     });
@@ -300,6 +304,7 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
   void dispose() {
     windowManager.removeListener(this);
     trayManager.removeListener(this);
+    _controlsTimer?.cancel();
     super.dispose();
   }
 
@@ -535,15 +540,35 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
           for (final x in spans)
             if (x is num) x + 0.0,
       ],
+      args.length > 3 && args[3] == true,
     );
-    if (!_pageReady) setState(() => _pageReady = true);
     final previous = pageChrome.value;
+    if (!_pageReady || chrome.splash != previous.splash) {
+      if (chrome.splash) {
+        if (_controlsShown) setState(() => _controlsShown = false);
+        _showControlsAfter(_splashLimit);
+      } else if (!_controlsShown) {
+        // 머리말이 화면에 실제로 그려질 때까지 잠깐 기다린다
+        _showControlsAfter(const Duration(milliseconds: 600));
+      }
+    }
+    if (!_pageReady) setState(() => _pageReady = true);
     if (chrome == previous) return;
     pageChrome.value = chrome;
     chrome.save(prefs);
     if (chrome.isDark != previous.isDark) {
       applyWindowFrameBrightness(chrome.isDark);
     }
+  }
+
+  /// 시작 화면이 이보다 오래가면(연결이 안 될 때 등) 창 단추를 그냥 보여 준다
+  static const _splashLimit = Duration(seconds: 12);
+
+  void _showControlsAfter(Duration delay) {
+    _controlsTimer?.cancel();
+    _controlsTimer = Timer(delay, () {
+      if (mounted) setState(() => _controlsShown = true);
+    });
   }
 
   @override
@@ -569,13 +594,19 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
                 left: left,
                 width: width.isFinite ? width : null,
                 right: width.isFinite ? null : kCaptionWidth,
-                height: chrome.captionHeight,
+                height: chrome.dragHeight,
                 child: const DragToMoveArea(child: SizedBox.expand()),
               ),
             Positioned(
               top: 0,
               right: 0,
-              child: WindowControls(chrome: chrome, maximized: _maximized),
+              child: WindowControls(
+                chrome: chrome,
+                maximized: _maximized,
+                // 시작 화면(페이지가 뜨기 전, Google 메시지의 스플래시)에서는 숨긴다
+                visible:
+                    !webViewAvailable || _loadError != null || _controlsShown,
+              ),
             ),
             if (!_maximized)
               const Positioned(

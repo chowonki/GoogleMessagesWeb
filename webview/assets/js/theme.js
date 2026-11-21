@@ -2,7 +2,8 @@
 // 앱에 알려 주는 것:
 // - 창 단추 자리의 배경색 (Google 메시지의 밝게/어둡게 설정은 Windows 설정과 따로 바뀌므로
 //   화면에서 직접 읽는다)
-// - 머리말의 높이: 창 단추를 같은 높이로 그린다
+// - 머리말의 높이
+// - 시작 화면(스플래시)인지: Google 메시지가 아직 머리말을 그리기 전. 그동안 앱은 창 단추를 숨긴다
 // - 머리말에서 아무것도 없는 가로 구간: 앱이 그 자리를 끌어 창을 옮기는 손잡이로 쓴다
 // 그리고 머리말 오른쪽 끝을 창 단추 너비만큼 비운다.
 // 창 단추를 앱이 직접 그리는 경우(Windows)에만 앱이 __gmCaptionWidth 를 넣어 준다.
@@ -93,10 +94,14 @@
     const header = findHeader();
     const height = header ? Math.round(header.getBoundingClientRect().height) : 0;
     const spans = captionWidth ? emptySpans(header, height || STRIP_HEIGHT) : [];
-    const key = [color, height, ...spans].join();
+    // 처음의 빈 문서도 시작 화면이다. 로그인 같은 다른 사이트의 화면에는 머리말이 원래 없으므로
+    // 시작 화면으로 보지 않는다
+    const splash = !header &&
+      (location.hostname === 'messages.google.com' || location.protocol === 'about:');
+    const key = [color, height, splash, ...spans].join();
     if (key === sent) return;
     try {
-      window.flutter_inappwebview.callHandler('gmTheme', color, height, spans);
+      window.flutter_inappwebview.callHandler('gmTheme', color, height, spans, splash);
       sent = key;
     } catch (e) {
       // 앱과의 연결이 아직 준비되지 않음: 다음 기회에 다시 보낸다

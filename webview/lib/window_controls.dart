@@ -9,7 +9,10 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
-const double kCaptionButtonWidth = 36;
+const double kCaptionButtonWidth = 30;
+
+/// 창 단추의 높이. Windows 의 창 단추처럼 창 맨 위에 붙여 놓는다.
+const double kCaptionHeight = 30;
 
 /// 창 단추 세 개의 너비. 페이지는 머리말 오른쪽 끝을 이만큼 비워 둔다.
 const double kCaptionWidth = kCaptionButtonWidth * 3;
@@ -17,7 +20,12 @@ const double kCaptionWidth = kCaptionButtonWidth * 3;
 /// 페이지 머리말의 모습 (theme.js 가 알려 준다).
 @immutable
 class PageChrome {
-  const PageChrome(this.color, [this.headerHeight = 0, this.spans = const []]);
+  const PageChrome(
+    this.color, [
+    this.headerHeight = 0,
+    this.spans = const [],
+    this.splash = false,
+  ]);
 
   static const light = PageChrome(Color(0xFFFFFFFF));
   static const dark = PageChrome(Color(0xFF131314));
@@ -31,10 +39,13 @@ class PageChrome {
   /// 머리말에서 누를 것이 없는 가로 구간: [왼쪽, 오른쪽, 왼쪽, 오른쪽, …]
   final List<double> spans;
 
+  /// Google 메시지의 시작 화면(머리말이 아직 없다)
+  final bool splash;
+
   bool get isDark => _isDark(color);
 
-  /// 창 단추의 높이: 머리말과 같게 해서 아이콘이 머리말 내용과 한 줄에 놓이게 한다
-  double get captionHeight =>
+  /// 창을 끌어 옮기는 손잡이의 높이: 머리말 전체 (머리말이 없으면 맨 위 띠)
+  double get dragHeight =>
       headerHeight > 0 ? headerHeight.clamp(32.0, 72.0) : 40;
 
   /// 창을 끌어 옮기는 손잡이로 쓸 구간들: (왼쪽, 너비)
@@ -62,10 +73,12 @@ class PageChrome {
       other is PageChrome &&
       other.color == color &&
       other.headerHeight == headerHeight &&
+      other.splash == splash &&
       listEquals(other.spans, spans);
 
   @override
-  int get hashCode => Object.hash(color, headerHeight, Object.hashAll(spans));
+  int get hashCode =>
+      Object.hash(color, headerHeight, splash, Object.hashAll(spans));
 }
 
 bool _isDark(Color c) => c.computeLuminance() < 0.4;
@@ -127,15 +140,19 @@ class WindowControls extends StatelessWidget {
     super.key,
     required this.chrome,
     required this.maximized,
+    this.visible = true,
   });
 
   final PageChrome chrome;
+
+  /// 숨기면 서서히 사라지고 눌리지도 않는다
+  final bool visible;
   final bool maximized;
 
   @override
   Widget build(BuildContext context) {
-    final height = chrome.captionHeight;
-    return Row(
+    const height = kCaptionHeight;
+    final buttons = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         _CaptionButton(
@@ -160,6 +177,14 @@ class WindowControls extends StatelessWidget {
           onTap: windowManager.close,
         ),
       ],
+    );
+    return IgnorePointer(
+      ignoring: !visible,
+      child: AnimatedOpacity(
+        opacity: visible ? 1 : 0,
+        duration: const Duration(milliseconds: 220),
+        child: buttons,
+      ),
     );
   }
 }
