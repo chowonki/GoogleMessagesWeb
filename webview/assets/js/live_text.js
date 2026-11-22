@@ -65,6 +65,7 @@
     document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
   } catch (e) {}
 
+  const BUBBLE = 'mws-text-message-part .text-msg-content';
   let entries = []; // { range, node, type, value }
   const scanned = new WeakMap(); // 말풍선 → 마지막으로 읽은 글
 
@@ -99,7 +100,7 @@
       highlight.delete(x.range);
       return false;
     });
-    document.querySelectorAll('mws-text-message-part .text-msg-content').forEach(scanBubble);
+    document.querySelectorAll(BUBBLE).forEach(scanBubble);
   };
   const schedule = () => {
     if (scheduled) return;
@@ -116,9 +117,13 @@
   else document.addEventListener('DOMContentLoaded', start);
 
   // ───── 클릭하면 복사 ─────
-  const entryAt = (x, y) => {
+  // [target] 이 든 말풍선의 항목만 본다. 마우스를 움직일 때마다 불리므로, 화면의 모든 항목의
+  // 위치를 다시 재지 않는다.
+  const entryAt = (x, y, target) => {
+    const bubble = target && target.closest ? target.closest(BUBBLE) : null;
+    if (!bubble) return null;
     for (const en of entries) {
-      if (!en.node.isConnected) continue;
+      if (!en.node.isConnected || !bubble.contains(en.node)) continue;
       for (const r of en.range.getClientRects()) {
         if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return en;
       }
@@ -159,7 +164,7 @@
     if (e.button !== 0 || !entries.length) return;
     const sel = window.getSelection();
     if (sel && !sel.isCollapsed) return; // 드래그로 글자를 선택한 경우
-    const en = entryAt(e.clientX, e.clientY);
+    const en = entryAt(e.clientX, e.clientY, e.target);
     if (!en) return;
     e.preventDefault();
     e.stopPropagation();
@@ -168,14 +173,14 @@
   }, true);
 
   // 인식된 글자 위에서는 손가락 커서
-  let hoverEl = null, moveQueued = false, lastX = 0, lastY = 0;
+  let hoverEl = null, moveQueued = false, lastX = 0, lastY = 0, lastTarget = null;
   document.addEventListener('mousemove', (e) => {
-    lastX = e.clientX; lastY = e.clientY;
+    lastX = e.clientX; lastY = e.clientY; lastTarget = e.target;
     if (moveQueued || !entries.length) return;
     moveQueued = true;
     requestAnimationFrame(() => {
       moveQueued = false;
-      const en = entryAt(lastX, lastY);
+      const en = entryAt(lastX, lastY, lastTarget);
       const el = en ? en.node.parentElement : null;
       if (hoverEl && hoverEl !== el) { hoverEl.style.cursor = ''; hoverEl.title = ''; }
       if (el) { el.style.cursor = 'pointer'; el.title = LABEL[en.type] + ' 복사'; }

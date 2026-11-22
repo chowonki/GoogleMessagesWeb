@@ -56,13 +56,32 @@
   const OVERLAY = '.cdk-overlay-container';
   const openPanel = () => document.querySelector(OVERLAY + ' .mat-mdc-menu-panel');
 
-  // 메뉴가 열려 있으면 화면 전체를 투명한 막(backdrop)이 덮는다. 그 아래의 실제 항목을 찾는다.
-  const targetUnder = (x, y) =>
-    document.elementsFromPoint(x, y).find((el) => !el.closest(OVERLAY)) || null;
+  // 열린 메뉴가 든 overlay 덩어리 (overlay 컨테이너 바로 아래 자식)
+  const menuHost = () => {
+    let el = openPanel();
+    while (el && el.parentElement && !el.parentElement.matches(OVERLAY)) el = el.parentElement;
+    return el;
+  };
+
+  // 메뉴의 투명한 막(backdrop). overlay 덩어리 바로 앞에 놓인다.
+  // 대화상자 위에 메뉴가 뜬 경우 대화상자의 어두운 막도 있으므로, 첫 번째 막이 아니라 이것을 고른다.
+  const menuBackdrop = () => {
+    const host = menuHost();
+    const prev = host && host.previousElementSibling;
+    return prev && prev.classList.contains('cdk-overlay-backdrop') ? prev : null;
+  };
+
+  // 메뉴가 열려 있으면 화면 전체를 메뉴의 막이 덮는다. 그 아래의 실제 항목을 찾는다.
+  // (대화상자가 열려 있으면 대화상자 안의 항목이 찾아진다)
+  const targetUnder = (x, y) => {
+    const host = menuHost(), backdrop = menuBackdrop();
+    return document.elementsFromPoint(x, y).find((el) =>
+      el !== backdrop && !(host && host.contains(el)) && !el.matches(OVERLAY)) || null;
+  };
 
   // 열린 메뉴를 닫는다 (막을 누른 것과 같다). 닫히는 움직임이 끝나 메뉴가 사라지면 [then] 을 부른다.
   const closeMenuThen = (then) => {
-    const backdrop = document.querySelector(OVERLAY + ' .cdk-overlay-backdrop');
+    const backdrop = menuBackdrop();
     if (backdrop) backdrop.click();
     else document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
     let tries = 0;

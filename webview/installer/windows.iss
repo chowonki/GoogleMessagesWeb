@@ -1,6 +1,6 @@
 ﻿; Google 메시지 (웹뷰 버전) 설치 프로그램 (Inno Setup 6)
 #ifndef AppVersion
-  #define AppVersion "1.5.3"
+  #define AppVersion "1.5.4"
 #endif
 #define AppName "Google 메시지 웹"
 #define AppExe "google_messages_web.exe"
