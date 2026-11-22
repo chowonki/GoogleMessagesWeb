@@ -53,17 +53,54 @@
     requestAnimationFrame(place);
   };
 
+  const OVERLAY = '.cdk-overlay-container';
+  const openPanel = () => document.querySelector(OVERLAY + ' .mat-mdc-menu-panel');
+
+  // 메뉴가 열려 있으면 화면 전체를 투명한 막(backdrop)이 덮는다. 그 아래의 실제 항목을 찾는다.
+  const targetUnder = (x, y) =>
+    document.elementsFromPoint(x, y).find((el) => !el.closest(OVERLAY)) || null;
+
+  // 열린 메뉴를 닫는다 (막을 누른 것과 같다). 닫히는 움직임이 끝나 메뉴가 사라지면 [then] 을 부른다.
+  const closeMenuThen = (then) => {
+    const backdrop = document.querySelector(OVERLAY + ' .cdk-overlay-backdrop');
+    if (backdrop) backdrop.click();
+    else document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+    let tries = 0;
+    const wait = () => {
+      if (!openPanel() || ++tries > 40) then();
+      else requestAnimationFrame(wait);
+    };
+    requestAnimationFrame(wait);
+  };
+
   document.addEventListener('contextmenu', (e) => {
-    const target = e.target;
+    let target = e.target;
     if (!target || !target.closest) return;
+    const x = e.clientX, y = e.clientY;
+    const menuOpen = !!openPanel();
+    if (target.closest(OVERLAY)) {
+      // 열린 메뉴 위에서의 우클릭은 아무것도 하지 않는다
+      if (target.closest('.mat-mdc-menu-panel') || !menuOpen) {
+        if (menuOpen) e.preventDefault();
+        return;
+      }
+      target = targetUnder(x, y);
+      if (!target) return;
+    }
     // 글자를 선택해 둔 상태면 기본 메뉴(복사)를 그대로 쓴다
     const sel = window.getSelection();
-    if (sel && !sel.isCollapsed && String(sel).trim()) return;
+    if (!menuOpen && sel && !sel.isCollapsed && String(sel).trim()) return;
     const found = findMenuButton(target);
-    if (!found) return;
+    if (!found) {
+      // 메뉴가 열린 채로 메뉴가 없는 곳을 우클릭하면 열린 메뉴만 닫는다
+      if (menuOpen) {
+        e.preventDefault();
+        closeMenuThen(() => {});
+      }
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
-    const x = e.clientX, y = e.clientY;
     const open = () => {
       const button = found.host.querySelector(found.selector);
       if (!button) return false;
@@ -71,15 +108,20 @@
       placeMenuAt(x, y);
       return true;
     };
-    if (open()) return;
-    // 말풍선의 ⋮ 단추는 마우스를 올려야 만들어진다
-    for (const type of ['pointerenter', 'mouseenter', 'pointerover', 'mouseover', 'mousemove']) {
-      target.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX: x, clientY: y }));
-    }
-    let tries = 0;
-    const retry = () => {
-      if (!open() && ++tries < 15) requestAnimationFrame(retry);
+    const start = () => {
+      if (open()) return;
+      // 말풍선의 ⋮ 단추는 마우스를 올려야 만들어진다
+      for (const type of ['pointerenter', 'mouseenter', 'pointerover', 'mouseover', 'mousemove']) {
+        target.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX: x, clientY: y }));
+      }
+      let tries = 0;
+      const retry = () => {
+        if (!open() && ++tries < 15) requestAnimationFrame(retry);
+      };
+      requestAnimationFrame(retry);
     };
-    requestAnimationFrame(retry);
+    // 다른 항목의 메뉴가 열려 있으면 먼저 닫고 연다
+    if (menuOpen) closeMenuThen(start);
+    else start();
   }, true);
 })();

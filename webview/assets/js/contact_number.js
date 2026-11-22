@@ -157,7 +157,8 @@
   const start = () => {
     const style = document.createElement('style');
     style.textContent =
-      `.${CLASS} { font-size: 12px; line-height: 16px; font-weight: 400; opacity: 0.72; ` +
+      `.${CLASS} { font-family: "Google Sans", Roboto, "Helvetica Neue", "Apple SD Gothic Neo", ` +
+      '"Malgun Gothic", sans-serif; font-size: 12px; line-height: 16px; font-weight: 400; opacity: 0.72; ' +
       'letter-spacing: 0.1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }';
     document.head.appendChild(style);
     // 목록은 계속 다시 그려진다(같은 칸이 다른 대화로 바뀌기도 한다)

@@ -142,17 +142,29 @@ void trace(String what) {
   } catch (_) {}
 }
 
-/// macOS: 제목 표시줄(창 단추가 있는 띠)을 페이지 머리말 색과 밝게/어둡게에 맞춘다.
+/// macOS: 제목 표시줄(창 단추가 있는 띠)을 페이지 머리말 색으로 칠한다.
 /// (Windows 는 제목 표시줄 없이 창 단추를 앱이 직접 그린다: window_controls.dart)
 Future<void> applyMacTitleBar(PageChrome chrome) async {
   if (!Platform.isMacOS) return;
   try {
     await const MethodChannel('gm/app').invokeMethod('setTitleBar', {
       'color': chrome.color.toARGB32() & 0xFFFFFF,
-      'dark': chrome.isDark,
     });
   } catch (_) {}
 }
+
+/// macOS: 페이지가 글꼴을 정하지 않은 글자는 WebKit 의 한글 기본 글꼴(AppleMyungjo, 명조)로
+/// 그려진다. Chrome 은 한국어 기본 글꼴이 고딕이라 Google 메시지가 따로 정하지 않은 곳이 있다.
+/// 문서 맨 위에 고딕을 지정해, 글꼴을 정하지 않은 곳이 이것을 물려받게 한다.
+const String _kMacDefaultFont = r'''
+(() => {
+  try {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(':root{font-family:Roboto,"Helvetica Neue","Apple SD Gothic Neo",sans-serif}');
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+  } catch (e) {}
+})();
+''';
 
 /// 실행 중인 앱을 끝낸다 (창이 만들어진 뒤에 채워진다)
 Future<void> Function()? quitApp;
@@ -262,6 +274,7 @@ Future<void> main(List<String> args) async {
     // 창 단추를 앱이 그릴 때만 페이지가 그 자리를 비우고 머리말의 빈 구간을 알려 준다 (theme.js)
     if (Platform.isWindows)
       'window.__gmCaptionWidth = ${kCaptionWidth.round()};',
+    if (Platform.isMacOS) _kMacDefaultFont,
     ...await scripts,
   ];
   runApp(MessagesWebApp(prefs: prefs, webViewReady: webViewReady));
@@ -496,7 +509,7 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
     }
   }
 
-  /// macOS: WebView 에 기본 글꼴(고딕)과 하드웨어 가속 설정을 넣는다(AppDelegate.swift).
+  /// macOS: WebView 에 하드웨어 가속 설정을 넣는다(AppDelegate.swift).
   /// WebView 가 막 만들어진 때는 아직 창에 붙지 않았을 수 있어 잠깐씩 다시 시도한다.
   Future<void> _configureMacWebView({required bool reloadAfter}) async {
     for (var i = 0; i < 20; i++) {
@@ -826,10 +839,10 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
           ),
           onWebViewCreated: (c) {
             _web = c;
-            // 글꼴은 바로 다시 그려진다. 하드웨어 가속은 기본(켜짐)이 WebKit 기본값 그대로이므로
-            // 꺼 둔 경우에만 페이지를 새로 불러와 처음부터 CPU 로 그리게 한다.
-            if (Platform.isMacOS) {
-              _configureMacWebView(reloadAfter: !_hardwareAcceleration);
+            // 기본(켜짐)은 WebKit 기본값 그대로이므로 꺼 둔 경우에만 적용하고,
+            // 페이지를 새로 불러와 처음부터 CPU 로 그리게 한다
+            if (Platform.isMacOS && !_hardwareAcceleration) {
+              _configureMacWebView(reloadAfter: true);
             }
             c.addJavaScriptHandler(
                 handlerName: 'gmTheme', callback: _onPageChrome);
