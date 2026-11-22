@@ -63,12 +63,17 @@
     return el;
   };
 
-  // 메뉴의 투명한 막(backdrop). overlay 덩어리 바로 앞에 놓인다.
+  // 메뉴의 투명한 막(backdrop): 메뉴 패널에서 위로 올라가며, 각 단계의 앞쪽 형제 중 처음 나오는 막.
+  // CDK 버전에 따라 막은 overlay 덩어리 안(메뉴 칸 바로 앞, popover 를 쓰는 경우)에 있거나
+  // 덩어리 바로 앞에 있다.
   // 대화상자 위에 메뉴가 뜬 경우 대화상자의 어두운 막도 있으므로, 첫 번째 막이 아니라 이것을 고른다.
   const menuBackdrop = () => {
-    const host = menuHost();
-    const prev = host && host.previousElementSibling;
-    return prev && prev.classList.contains('cdk-overlay-backdrop') ? prev : null;
+    for (let el = openPanel(); el && !el.matches(OVERLAY); el = el.parentElement) {
+      for (let prev = el.previousElementSibling; prev; prev = prev.previousElementSibling) {
+        if (prev.classList.contains('cdk-overlay-backdrop')) return prev;
+      }
+    }
+    return null;
   };
 
   // 메뉴가 열려 있으면 화면 전체를 메뉴의 막이 덮는다. 그 아래의 실제 항목을 찾는다.

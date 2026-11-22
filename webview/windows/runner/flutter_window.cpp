@@ -27,14 +27,11 @@ bool FlutterWindow::OnCreate() {
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
-  flutter_controller_->engine()->SetNextFrameCallback([&]() {
-    this->Show();
-  });
-
-  // Flutter can complete the first frame before the "show window" callback is
-  // registered. The following call ensures a frame is pending to ensure the
-  // window is shown. It is a no-op if the first frame hasn't completed yet.
-  flutter_controller_->ForceRedraw();
+  // The Flutter template shows the window as soon as the first frame is drawn.
+  // This app shows it from Dart instead (lib/main.dart, waitUntilReadyToShow),
+  // once its size and position are restored, and not at all when started with
+  // --hidden (Windows autostart: tray only). Showing it here made the window
+  // appear at startup even with --hidden, and stay.
 
   return true;
 }
