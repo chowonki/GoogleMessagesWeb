@@ -44,7 +44,9 @@ class MainFlutterWindow: NSWindow {
       }
       let field = CGEventField.scrollWheelEventFixedPtDeltaAxis1
       wheel.setDoubleValueField(field, value: wheel.getDoubleValueField(field) * scale)
-      if let adjusted = NSEvent(cgEvent: wheel) {
+      if let adjusted = NSEvent(cgEvent: wheel),
+         adjusted.windowNumber == event.windowNumber,
+         adjusted.locationInWindow == event.locationInWindow {
         super.sendEvent(adjusted)
         return
       }
