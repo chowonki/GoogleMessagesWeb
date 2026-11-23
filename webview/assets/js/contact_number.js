@@ -111,22 +111,23 @@
 
   // ───── 화면에 적기 ─────
   // anchor 바로 다음에 번호 한 줄을 둔다. text 가 없으면 지운다.
-  const put = (anchor, text) => {
+  const put = (anchor, name) => {
     if (!anchor) return;
+    const text = numberFor(name);
     const next = anchor.nextElementSibling;
-    const line = next && next.classList.contains(CLASS) ? next : null;
+    let line = next && next.classList.contains(CLASS) ? next : null;
     if (!text) {
       if (line) line.remove();
       return;
     }
-    if (line) {
-      if (line.textContent !== text) line.textContent = text;
-      return;
+    if (!line) {
+      line = document.createElement('div');
+      line.className = CLASS;
+      anchor.after(line);
     }
-    const el = document.createElement('div');
-    el.className = CLASS;
-    el.textContent = text;
-    anchor.after(el);
+    if (line.textContent !== text) line.textContent = text;
+    const color = getComputedStyle(name).color;
+    if (line.style.color !== color) line.style.color = color;
   };
 
   const numberFor = (el) => {
@@ -137,10 +138,10 @@
   const apply = () => {
     for (const item of document.querySelectorAll('mws-conversation-list-item')) {
       put(item.querySelector('h2.name'),
-        numberFor(item.querySelector('[data-e2e-conversation-name]')));
+        item.querySelector('[data-e2e-conversation-name]'));
     }
     const title = document.querySelector('mws-header [data-e2e-header-title]');
-    if (title) put(title, numberFor(title.querySelector('h2')));
+    if (title) put(title, title.querySelector('h2'));
   };
 
   // 화면은 글자를 칠 때마다도 바뀐다: 바뀔 때마다가 아니라 잠깐 모아서 한 번만 다시 적는다
@@ -158,12 +159,18 @@
     const style = document.createElement('style');
     style.textContent =
       `.${CLASS} { font-family: "Google Sans", Roboto, "Helvetica Neue", "Apple SD Gothic Neo", ` +
-      '"Malgun Gothic", sans-serif; font-size: 12px; line-height: 16px; font-weight: 400; opacity: 0.72; ' +
+      '"Malgun Gothic", sans-serif; font-size: 12px; line-height: 16px; font-weight: 400; ' +
       'letter-spacing: 0.1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }';
     document.head.appendChild(style);
     // 목록은 계속 다시 그려진다(같은 칸이 다른 대화로 바뀌기도 한다)
-    new MutationObserver(schedule)
-      .observe(document.body, { childList: true, subtree: true, characterData: true });
+    new MutationObserver((changes) => {
+      if (changes.some(({ target }) => !target.parentElement?.closest('.' + CLASS) &&
+          !target.classList?.contains(CLASS))) schedule();
+    }).observe(document.documentElement, {
+      childList: true, subtree: true, characterData: true, attributes: true,
+      attributeFilter: ['class', 'style', 'data-theme', 'data-color-mode', 'color-scheme'],
+    });
+    matchMedia('(prefers-color-scheme: dark)').addEventListener('change', schedule);
     load();
     setInterval(() => { if (!document.hidden) load(); }, RELOAD_MS);
     document.addEventListener('visibilitychange', schedule);

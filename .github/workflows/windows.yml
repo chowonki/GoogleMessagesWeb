@@ -1,0 +1,52 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/windows.yml'
+      - 'packages/**'
+      - 'webview/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.50.0'
+      - name: Build Windows release
+        shell: pwsh
+        run: |
+          # Keep paths short for the WebView2 MSBuild dependencies.
+          subst W: "${{ github.workspace }}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Set-Location W:\webview
+          flutter pub get
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          flutter analyze --no-fatal-infos
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          flutter build windows --release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package installer
+        shell: pwsh
+        working-directory: webview
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          & $iscc installer\windows.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GoogleMessagesWeb-Windows
+          path: webview/dist/GoogleMessagesWeb-Setup-*.exe
+          if-no-files-found: error

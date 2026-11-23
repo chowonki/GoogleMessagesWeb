@@ -303,7 +303,6 @@ class _CustomPlatformViewState extends State<CustomPlatformView> {
       focusNode: _focusNode,
       canRequestFocus: true,
       debugLabel: "flutter_inappwebview_windows_custom_platform_view",
-      onFocusChange: (focused) {},
       child: SizedBox.expand(key: _key, child: _buildInner()),
     );
   }
@@ -333,11 +332,6 @@ class _CustomPlatformViewState extends State<CustomPlatformView> {
 
                       if (!_focusNode.hasFocus) {
                         _focusNode.requestFocus();
-                        Future.delayed(const Duration(milliseconds: 50), () {
-                          if (!_focusNode.hasFocus) {
-                            _focusNode.requestFocus();
-                          }
-                        });
                       }
 
                       _pointerKind = ev.kind;
@@ -352,6 +346,7 @@ class _CustomPlatformViewState extends State<CustomPlatformView> {
                       }
                       final button = _getButton(ev.buttons);
                       _downButtons[ev.pointer] = button;
+                      _controller._setCursorPos(ev.localPosition);
                       _controller._setPointerButtonState(button, true);
                     },
                     onPointerUp: (ev) {
@@ -392,8 +387,11 @@ class _CustomPlatformViewState extends State<CustomPlatformView> {
                     },
                     onPointerSignal: (signal) {
                       if (signal is PointerScrollEvent) {
+                        // Use the original Windows pixel scale for wheel steps.
+                        final dpr = View.of(context).devicePixelRatio;
                         _controller._setScrollDelta(
-                            -signal.scrollDelta.dx, -signal.scrollDelta.dy);
+                            -signal.scrollDelta.dx * dpr,
+                            -signal.scrollDelta.dy * dpr);
                       }
                     },
                     onPointerPanZoomUpdate: (ev) {

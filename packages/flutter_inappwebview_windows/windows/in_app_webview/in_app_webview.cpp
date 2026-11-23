@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <nlohmann/json.hpp>
@@ -1777,9 +1779,14 @@ namespace flutter_inappwebview_plugin
         : COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_UP;
       break;
     default:
-      kind = static_cast<COREWEBVIEW2_MOUSE_EVENT_KIND>(0);
+      return;
     }
 
+    if (is_down && webViewController &&
+        (button == InAppWebViewPointerButton::Primary ||
+         button == InAppWebViewPointerButton::Secondary)) {
+      webViewController->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+    }
     webViewCompositionController->SendMouseInput(kind, virtualKeys_.state(), 0,
       lastCursorPos_);
   }
@@ -1790,10 +1797,23 @@ namespace flutter_inappwebview_plugin
       return;
     }
 
-    // delta * 6 gives me a multiple of WHEEL_DELTA (120)
-    constexpr auto kScrollMultiplier = 6;
-
-    auto offset = static_cast<short>(delta * kScrollMultiplier);
+    // Flutter has already scaled the wheel steps by the Windows scroll setting.
+    // Undo that conversion before WebView2 applies the setting itself.
+    UINT linesPerStep = 3;
+    SystemParametersInfo(SPI_GETWHEELSCROLLLINES, 0, &linesPerStep, 0);
+    if (linesPerStep == 0) {
+      return;
+    }
+    if (linesPerStep == WHEEL_PAGESCROLL) {
+      linesPerStep = 3;
+    }
+    const auto pixelsPerStep = std::floor(linesPerStep * 100.0 / 3.0);
+    const auto wheelDelta = std::clamp(delta * WHEEL_DELTA / pixelsPerStep,
+      -32768.0, 32767.0);
+    const auto offset = static_cast<int>(std::lround(wheelDelta));
+    if (offset == 0) {
+      return;
+    }
 
     if (horizontal) {
       webViewCompositionController->SendMouseInput(
