@@ -218,6 +218,14 @@
     }
   };
 
+  // OCR 이 끝났는데 글자가 하나도 없는지 (실패했거나, 성공했어도 줄이 비어 있으면)
+  const noTextFor = (img) => {
+    const key = img ? (img.currentSrc || img.src) : '';
+    if (!img || !ocrCache.has(key)) return false;
+    const r = ocrCache.get(key);
+    return !r || !r.lines || !r.lines.length;
+  };
+
   const hasOcr = () => !!(window.flutter_inappwebview && window.flutter_inappwebview.callHandler);
 
   try {
@@ -243,7 +251,11 @@
       '.gm-ocr-glow{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none}' +
       'mws-lightbox .gm-live-on .gm-ocr-glow{display:block;animation:gm-ocr-in .25s ease-out}' +
       '.gm-ocr-glow rect.gm-ocr-box{fill:rgba(255,255,255,.06);stroke:rgba(255,255,255,.95);' +
-      'stroke-width:1.5px;vector-effect:non-scaling-stroke;filter:drop-shadow(0 0 3px rgba(255,255,255,.7))}' +
+      'stroke-width:1.5px;vector-effect:non-scaling-stroke}' +
+      // 빛 번짐은 줄마다 두지 않고 묶음 하나에만 준다. 확대 중에는 매 프레임 다시 그리느라
+      // 느려지므로 끈다 (테두리만 남는다).
+      '.gm-ocr-glow g.gm-ocr-boxes{filter:drop-shadow(0 0 3px rgba(255,255,255,.7))}' +
+      '.gm-zoomed .gm-ocr-glow g.gm-ocr-boxes{filter:none}' +
       '@keyframes gm-ocr-in{from{opacity:0}to{opacity:1}}');
     document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
   } catch (e) {}
@@ -309,7 +321,7 @@
     const glow = svgEl('svg', { class: 'gm-ocr-glow', viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'none' });
     const mask = svgEl('mask', { id: maskId, maskUnits: 'userSpaceOnUse', x: 0, y: 0, width: W, height: H });
     mask.appendChild(svgEl('rect', { x: 0, y: 0, width: W, height: H, fill: '#fff' }));
-    const boxes = svgEl('g', {});
+    const boxes = svgEl('g', { class: 'gm-ocr-boxes' });
     glow.appendChild(mask);
     glow.appendChild(svgEl('rect', { x: 0, y: 0, width: W, height: H, fill: 'rgba(0,0,0,.5)', mask: 'url(#' + maskId + ')' }));
     glow.appendChild(boxes);
@@ -486,12 +498,23 @@
     }
   });
 
+  // 지금 이미지에 맞는 층. 같은 img 요소가 다른 이미지로 바뀌었으면 앞 이미지의 층은 버린다.
+  const currentLayer = (img) => {
+    const layer = img && layers.get(img);
+    if (!layer || !layer.isConnected) return null;
+    if (layer.__gmKey === (img.currentSrc || img.src)) return layer;
+    layer.remove();
+    layers.delete(img);
+    return null;
+  };
+
   const attach = (img, result) => {
     const old = layers.get(img);
     if (old) old.remove();
     if (!result || !result.lines || !result.lines.length || !img.parentElement) return;
     const layer = buildLayer(img, result);
     img.parentElement.appendChild(layer);
+    layer.__gmKey = img.currentSrc || img.src;
     layers.set(img, layer);
     fitLayer(img, layer);
     resizeObserver.observe(img);
@@ -529,8 +552,7 @@
     // 잘못 읽히므로, 충분히 큰 이미지일 때만 읽는다.
     const inViewer = !!img.closest('mws-lightbox');
     if (!inViewer && Math.max(img.naturalWidth, img.naturalHeight) < 600) return;
-    const layer = layers.get(img);
-    if (layer && layer.isConnected) return;
+    if (currentLayer(img)) return;
     const key = img.currentSrc || img.src;
     if (ocrCache.has(key)) {
       attach(img, ocrCache.get(key)); // 화면이 다시 그려져 층이 사라진 경우
@@ -567,8 +589,7 @@
       visibility.observe(img);
       // 이미 본 이미지인데 층만 사라졌으면 바로 다시 붙인다
       const key = img.currentSrc || img.src;
-      const layer = layers.get(img);
-      if (ocrCache.get(key) && !(layer && layer.isConnected) && img.complete) attach(img, ocrCache.get(key));
+      if (ocrCache.get(key) && !currentLayer(img) && img.complete) attach(img, ocrCache.get(key));
     });
   };
   const startImages = () => {
@@ -633,6 +654,7 @@
       const zoomed = st.scale > MIN_ZOOM;
       if (!zoomed) panMode = false;
       content.classList.toggle('gm-pan-mode', panMode);
+      content.classList.toggle('gm-zoomed', zoomed);
       content.style.cursor = zoomed ? (st.drag ? 'grabbing' : 'grab') : '';
       panButton.disabled = !zoomed;
       panButton.setAttribute('aria-pressed', String(panMode));
@@ -641,9 +663,7 @@
       panButton.style.boxShadow = panMode ? 'inset 0 0 0 2px currentColor' : '';
       st.label.textContent = Math.round(st.scale * 100) + '%';
       if (liveButton) {
-        const img = currentImg();
-        const key = img ? (img.currentSrc || img.src) : '';
-        const noText = !!img && ocrCache.has(key) && !ocrCache.get(key);
+        const noText = noTextFor(currentImg());
         if (noText) liveMode = false;
         content.classList.toggle('gm-live-on', liveMode);
         liveButton.setAttribute('aria-pressed', String(liveMode));
@@ -778,8 +798,8 @@
       apply();
       if (on) { // 숨겨 둔 사이 이미지 상자가 바뀌었을 수 있으니 층을 다시 맞춘다
         const img = currentImg();
-        const layer = img && layers.get(img);
-        if (layer && layer.isConnected) fitLayer(img, layer);
+        const layer = currentLayer(img);
+        if (layer) fitLayer(img, layer);
       }
     };
     st.setLive = setLive;
@@ -788,7 +808,7 @@
         if (liveMode) { setLive(false); return; }
         const img = currentImg();
         const key = img ? (img.currentSrc || img.src) : '';
-        if (img && ocrCache.has(key) && !ocrCache.get(key)) {
+        if (noTextFor(img)) {
           toast('이미지에서 글자를 찾지 못했습니다');
           return;
         }
@@ -808,6 +828,11 @@
     }
     st.apply = apply;
     apply();
+    // 이미 읽어 둔 이미지는 확대 보기가 준비되기 전에 층이 붙는다. 위의 apply() 로 이미지 상자의
+    // 기준 위치가 바뀌었으니 층을 다시 맞춘다.
+    const firstImg = currentImg();
+    const firstLayer = currentLayer(firstImg);
+    if (firstLayer) fitLayer(firstImg, firstLayer);
     const host = box.querySelector('.lightbox-main') || box;
     if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
     host.appendChild(bar);
@@ -824,7 +849,8 @@
     if (e.key === '+' || e.key === '=') st.zoomBy(1.5);
     else if (e.key === '-' || e.key === '_') st.zoomBy(1 / 1.5);
     else if (e.key === '0') st.reset();
-    else if ((e.key === 't' || e.key === 'T') && st.toggleLive) st.toggleLive();
+    // 한글 입력 상태에서는 e.key 가 'ㅅ' 으로 오므로 자판 위치(e.code)로도 본다
+    else if ((e.code === 'KeyT' || e.key === 't' || e.key === 'T') && st.toggleLive) st.toggleLive();
     else return;
     e.preventDefault();
     e.stopPropagation();
@@ -850,9 +876,8 @@
     const box = img && img.closest ? img.closest('mws-lightbox') : null;
     const st = box && zoomStates.get(box);
     if (!st || !st.apply) return;
-    const key = img.currentSrc || img.src;
     const waiting = !!box.querySelector('mat-dialog-content.gm-live-on');
-    if (waiting && ocrCache.has(key) && !ocrCache.get(key)) toast('이미지에서 글자를 찾지 못했습니다');
+    if (waiting && noTextFor(img)) toast('이미지에서 글자를 찾지 못했습니다');
     st.apply(); // 글자가 없으면 여기서 텍스트 인식이 꺼진다
   };
 
