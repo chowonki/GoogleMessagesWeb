@@ -209,8 +209,12 @@ class AppDelegate: FlutterAppDelegate {
       let limit = peak * 35 / 100
       // Vision 상자 가운데에서 위아래로 넓혀 가며, 글자가 끊기는 행을 찾는다
       let mid = (Int((1 - b.midY) * CGFloat(h)) - top).clamped(0, ranges.count - 1)
-      guard let seed = (0..<ranges.count).min(by: { abs($0 - mid) + (ranges[$0] >= limit ? 0 : 10_000) <
-                                                    abs($1 - mid) + (ranges[$1] >= limit ? 0 : 10_000) }),
+      func rowScore(_ index: Int) -> Int {
+        let distance = abs(index - mid)
+        let penalty = ranges[index] >= limit ? 0 : 10_000
+        return distance + penalty
+      }
+      guard let seed = ranges.indices.min(by: { rowScore($0) < rowScore($1) }),
             ranges[seed] >= limit else { return b }
       // 글자 사이 작은 틈(받침과 모음 사이 등)은 건너뛴다
       let gapAllowed = max(2, Int(b.height * CGFloat(h) * 0.12))
