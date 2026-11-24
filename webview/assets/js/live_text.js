@@ -1,5 +1,5 @@
 // 라이브 텍스트와 이미지 확대 보기.
-//  - 말풍선 글과 이미지 속 글자에서 전화번호·계좌번호·인증번호·이메일·운송장 번호를 인식해
+//  - 말풍선 글과 이미지 속 글자에서 전화번호·계좌번호·인증번호·이메일·운송장 번호·차량번호를 인식해
 //    표시하고, 클릭하면 복사한다. 이미지 글자는 드래그로 선택할 수도 있다. (OCR 은 앱이 처리)
 //  - 이미지 확대 보기에서 휠·더블클릭·끌기·키보드로 확대/축소/이동한다.
 (() => {
@@ -9,12 +9,13 @@
   const NAME = 'gm-live-text';
   const LABEL = {
     phone: '전화번호', account: '계좌번호', code: '인증번호',
-    email: '이메일 주소', tracking: '운송장 번호',
+    email: '이메일 주소', tracking: '운송장 번호', vehiclePlate: '차량번호',
   };
 
   // ───── 인식 규칙 ─────
   const PHONE = /(?<![\d-])(?:\+82[-\s]?1[016789]|01[016789])[-.\s]?\d{3,4}[-.\s]?\d{4}(?![\d-])|(?<![\d-])0\d{1,2}[-.\s]\d{3,4}[-.\s]\d{4}(?![\d-])|(?<![\d-])1[5-9]\d{2}-?\d{4}(?![\d-])/g;
   const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
+  const VEHICLE_PLATE = /(?<![A-Za-z0-9])(?:(?:서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|충북|충남|전북|전남|경북|경남|제주)[ \t]*)?\d{2,3}[ \t]*[가나다라마거너더러머버서어저고노도로모보소오조구누두루무부수우주아바사자배하허호][ \t]*\d{4}(?![A-Za-z0-9])/g;
   const HYPHEN_NUMBER = /(?<![\d-])\d{2,6}(?:-\d{2,7}){1,3}(?![\d-])/g;
   const PLAIN_NUMBER = /(?<![\d-])\d{4,16}(?![\d-])/g;
   const BANK_HINT = /은행|뱅크|농협|수협|신협|우체국|새마을|금고|증권|계좌|입금|송금|이체|예금주/;
@@ -38,6 +39,7 @@
       hint.test(text.slice(Math.max(0, s - span), Math.min(text.length, e + span)));
     add(EMAIL, (v) => ['email', v]);
     add(PHONE, (v) => ['phone', v]);
+    add(VEHICLE_PLATE, (v) => ['vehiclePlate', v]);
     add(HYPHEN_NUMBER, (v) => {
       const digits = v.replace(/\D/g, '').length;
       if (digits < 9 || digits > 16) return null;
