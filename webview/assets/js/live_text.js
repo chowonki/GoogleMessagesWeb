@@ -816,11 +816,19 @@
         setLive(true);
       };
       liveButton = button('', '텍스트 인식 (T)', st.toggleLive);
-      liveButton.innerHTML =
-        '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
-        'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-        '<path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2' +
-        'M8 20H6a2 2 0 0 1-2-2v-2M8 9h8M8 12h8M8 15h5"/></svg>';
+      // Google 메시지는 Trusted Types 를 강제해 innerHTML 에 문자열을 넣으면 오류가 난다.
+      // 그러면 이 뒤의 도구 모음 붙이기까지 멈추므로, 아이콘은 요소를 직접 만들어 넣는다.
+      const SVG_NS = 'http://www.w3.org/2000/svg';
+      const icon = document.createElementNS(SVG_NS, 'svg');
+      const iconAttrs = { width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+        'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' };
+      for (const k in iconAttrs) icon.setAttribute(k, iconAttrs[k]);
+      const iconPath = document.createElementNS(SVG_NS, 'path');
+      iconPath.setAttribute('d', 'M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2' +
+        'M8 20H6a2 2 0 0 1-2-2v-2M8 9h8M8 12h8M8 15h5');
+      icon.appendChild(iconPath);
+      liveButton.textContent = '';
+      liveButton.appendChild(icon);
       liveButton.style.display = 'inline-flex';
       liveButton.style.alignItems = 'center';
       liveButton.style.justifyContent = 'center';
