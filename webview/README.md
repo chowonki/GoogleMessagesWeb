@@ -57,7 +57,14 @@ flutter build windows --release
 
 # 3) 설치 파일 → dist\GoogleMessagesWeb-Setup-<버전>.exe
 & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" installer\windows.iss
+
+# 4) (선택) MSI → dist\GoogleMessagesWeb-<버전>.msi  (WiX 5: dotnet tool install --global wix --version 5.0.2)
+wix build installer\windows.wxs -arch x64 -d Version=<버전> -o dist\GoogleMessagesWeb-<버전>.msi
 ```
+
+MSI 는 회사 일괄 배포용입니다. 현재 사용자 범위로 `%LOCALAPPDATA%\Programs\GoogleMessagesWeb` 에 설치되고
+(exe 설치본과 다른 폴더), 시작 메뉴 바로 가기만 만듭니다. 자동 실행은 앱의 트레이 메뉴에서 켭니다.
+exe 로 설치했던 것을 MSI 로 바꾸려면 exe 설치본을 먼저 제거하세요.
 
 버전은 `pubspec.yaml` 의 `version` 과 `installer/windows.iss` 의 `AppVersion` 두 곳을 함께 올립니다.
 

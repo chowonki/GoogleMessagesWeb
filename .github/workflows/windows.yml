@@ -45,8 +45,20 @@ jobs:
           }
           & $iscc installer\windows.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package MSI
+        shell: pwsh
+        working-directory: webview
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $wix = "$env:USERPROFILE\.dotnet\tools\wix.exe"
+          $version = (Select-String -Path pubspec.yaml -Pattern '^version:\s*([0-9.]+)').Matches[0].Groups[1].Value
+          & $wix build installer\windows.wxs -arch x64 -d "Version=$version" -o "dist\GoogleMessagesWeb-$version.msi"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: GoogleMessagesWeb-Windows
-          path: webview/dist/GoogleMessagesWeb-Setup-*.exe
+          path: |
+            webview/dist/GoogleMessagesWeb-Setup-*.exe
+            webview/dist/GoogleMessagesWeb-*.msi
           if-no-files-found: error

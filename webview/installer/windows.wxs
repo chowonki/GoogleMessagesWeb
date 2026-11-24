@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Google 메시지 웹 MSI 설치 프로그램 (WiX Toolset 5)
+  - 회사 일괄 배포(GPO·Intune 등)나 MSI 가 필요한 경우용. 일반 사용자는 Inno Setup 의 exe 를 쓴다.
+  - 현재 사용자 범위: 관리자 권한 없이 %LOCALAPPDATA%\Programs\GoogleMessagesWeb 에 설치한다.
+    exe 설치본(Google Messages Web 폴더)과 폴더가 달라, 둘이 서로의 파일을 덮어쓰지 않는다.
+  - 빌드: wix build installer\windows.wxs -arch x64 -d Version=<버전> -o dist\GoogleMessagesWeb-<버전>.msi
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="Google 메시지 웹"
+      Manufacturer="chowonki"
+      Version="$(var.Version)"
+      UpgradeCode="0d7aba53-e86e-4f07-9d10-d513c64057b5"
+      Scope="perUser"
+      Language="1042"
+      Codepage="949">
+    <SummaryInformation Description="Google 메시지 웹" Manufacturer="chowonki" />
+    <MajorUpgrade DowngradeErrorMessage="더 새 버전의 Google 메시지 웹이 이미 설치되어 있습니다." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="AppIcon" SourceFile="$(sys.SOURCEFILEDIR)..\windows\runner\resources\app_icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="GoogleMessagesWeb" />
+      </Directory>
+    </StandardDirectory>
+
+    <!-- Flutter 빌드 결과(exe, dll, data 폴더) 전부 -->
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(sys.SOURCEFILEDIR)..\build\windows\x64\runner\Release\**" />
+    </ComponentGroup>
+
+    <!-- 시작 메뉴 바로 가기 (현재 사용자 설치라 HKCU 값을 키로 둔다) -->
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Guid="*">
+        <Shortcut Id="AppShortcut" Name="Google 메시지 웹"
+                  Target="[INSTALLFOLDER]google_messages_web.exe"
+                  WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" />
+        <RegistryValue Root="HKCU" Key="Software\chowonki\GoogleMessagesWeb" Name="StartMenuShortcut"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <!-- 설치·제거 전에 트레이에 숨어 있는 앱까지 끝낸다 (없으면 실패해도 무시) -->
+    <CustomAction Id="KillRunningApp" Directory="SystemFolder" Execute="immediate" Return="ignore"
+                  ExeCommand="&quot;[SystemFolder]taskkill.exe&quot; /F /T /IM google_messages_web.exe" />
+    <InstallExecuteSequence>
+      <Custom Action="KillRunningApp" Before="InstallValidate" />
+    </InstallExecuteSequence>
+
+    <Feature Id="Main" Title="Google 메시지 웹">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>
