@@ -2,6 +2,7 @@
 //  - 말풍선 글과 이미지 속 글자에서 전화번호·계좌번호·인증번호·이메일·운송장 번호·차량번호를 인식해
 //    표시하고, 클릭하면 복사한다. 이미지 글자는 드래그로 선택할 수도 있다. (OCR 은 앱이 처리)
 //  - 이미지 확대 보기에서 휠·더블클릭·끌기·키보드로 확대/축소/이동한다.
+//    텍스트 인식 단추(T)를 누르면 글자만 강조해 보여 주고 선택·복사할 수 있다. 안 누르면 그냥 이미지.
 (() => {
   if (window.__gmLiveText || !window.CSS || !CSS.highlights || !window.Highlight) return;
   window.__gmLiveText = true;
@@ -235,7 +236,15 @@
       '.gm-ocr-hit{position:absolute;pointer-events:auto;cursor:pointer;border-radius:3px;' +
       'background:rgba(26,115,232,.25);box-shadow:0 0 0 1px rgba(26,115,232,.75)}' +
       '.gm-ocr-hit:hover{background:rgba(26,115,232,.45)}' +
-      '.gm-pan-mode .gm-ocr-line,.gm-pan-mode .gm-ocr-hit{pointer-events:none}');
+      '.gm-pan-mode .gm-ocr-line,.gm-pan-mode .gm-ocr-hit{pointer-events:none}' +
+      // 확대 보기에서는 텍스트 인식 단추를 눌렀을 때만 글자 층을 쓴다 (안 눌렀으면 그냥 이미지)
+      'mws-lightbox .gm-ocr-layer{visibility:hidden}' +
+      'mws-lightbox .gm-live-on .gm-ocr-layer{visibility:visible}' +
+      '.gm-ocr-glow{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none}' +
+      'mws-lightbox .gm-live-on .gm-ocr-glow{display:block;animation:gm-ocr-in .25s ease-out}' +
+      '.gm-ocr-glow rect.gm-ocr-box{fill:rgba(255,255,255,.06);stroke:rgba(255,255,255,.95);' +
+      'stroke-width:1.5px;vector-effect:non-scaling-stroke;filter:drop-shadow(0 0 3px rgba(255,255,255,.7))}' +
+      '@keyframes gm-ocr-in{from{opacity:0}to{opacity:1}}');
     document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
   } catch (e) {}
 
@@ -275,6 +284,7 @@
     return { text, spans };
   };
 
+  let glowSeq = 0;
   const pct = (v, total) => (v / total * 100) + '%';
 
   const cq = (v, total, unit) => (v / total * 100) + unit;
@@ -288,12 +298,36 @@
     marks.className = 'gm-ocr-sel';
     layer.appendChild(marks);
     const W = result.w, H = result.h;
+    // 텍스트 인식 모드의 강조 표시: 이미지를 어둡게 하고 글자 줄만 밝게 테를 두른다
+    const SVG = 'http://www.w3.org/2000/svg';
+    const svgEl = (tag, attrs) => {
+      const el = document.createElementNS(SVG, tag);
+      for (const k in attrs) el.setAttribute(k, attrs[k]);
+      return el;
+    };
+    const maskId = 'gm-ocr-mask-' + (++glowSeq);
+    const glow = svgEl('svg', { class: 'gm-ocr-glow', viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'none' });
+    const mask = svgEl('mask', { id: maskId, maskUnits: 'userSpaceOnUse', x: 0, y: 0, width: W, height: H });
+    mask.appendChild(svgEl('rect', { x: 0, y: 0, width: W, height: H, fill: '#fff' }));
+    const boxes = svgEl('g', {});
+    glow.appendChild(mask);
+    glow.appendChild(svgEl('rect', { x: 0, y: 0, width: W, height: H, fill: 'rgba(0,0,0,.5)', mask: 'url(#' + maskId + ')' }));
+    glow.appendChild(boxes);
+    layer.insertBefore(glow, marks);
     for (const line of result.lines) {
       const words = line.words || [];
       if (!words.length) continue;
       const x0 = Math.min(...words.map((w) => w.x)), y0 = Math.min(...words.map((w) => w.y));
       const y1 = Math.max(...words.map((w) => w.y + w.h));
       const { text, spans } = joinWords(words);
+      {
+        const x1 = Math.max(...words.map((w) => w.x + w.w));
+        const pad = (y1 - y0) * 0.18;
+        const box = { x: x0 - pad, y: y0 - pad, width: x1 - x0 + pad * 2, height: y1 - y0 + pad * 2,
+          rx: (y1 - y0) * 0.25 };
+        mask.appendChild(svgEl('rect', Object.assign({ fill: '#000' }, box)));
+        boxes.appendChild(svgEl('rect', Object.assign({ class: 'gm-ocr-box' }, box)));
+      }
 
       const el = document.createElement('span');
       el.className = 'gm-ocr-line';
@@ -480,6 +514,7 @@
       ocrCache.set(key, result);
       queued.delete(img);
       if (img.isConnected && (img.currentSrc || img.src) === key) attach(img, result);
+      refreshViewer(img);
     }
     ocrBusy = false;
   };
@@ -587,10 +622,13 @@
     if (!content) return;
     const st = { scale: 1, tx: 0, ty: 0, src: '', label: null, drag: null, dragged: false };
     let panMode = false;
+    let liveMode = false; // 텍스트 인식 단추
     zoomStates.set(box, st);
     content.style.overflow = 'hidden';
 
     const target = () => box.querySelector('mat-dialog-content mws-image');
+    const currentImg = () => box.querySelector('mat-dialog-content mws-image img');
+    let liveButton = null;
     const apply = () => {
       const zoomed = st.scale > MIN_ZOOM;
       if (!zoomed) panMode = false;
@@ -602,6 +640,17 @@
       panButton.style.cursor = zoomed ? 'pointer' : 'default';
       panButton.style.boxShadow = panMode ? 'inset 0 0 0 2px currentColor' : '';
       st.label.textContent = Math.round(st.scale * 100) + '%';
+      if (liveButton) {
+        const img = currentImg();
+        const key = img ? (img.currentSrc || img.src) : '';
+        const noText = !!img && ocrCache.has(key) && !ocrCache.get(key);
+        if (noText) liveMode = false;
+        content.classList.toggle('gm-live-on', liveMode);
+        liveButton.setAttribute('aria-pressed', String(liveMode));
+        liveButton.style.opacity = noText ? '.45' : '1';
+        liveButton.style.color = liveMode ? '#8ab4f8' : 'inherit';
+        liveButton.style.boxShadow = liveMode ? 'inset 0 0 0 2px currentColor' : '';
+      }
       const el = target();
       if (!el) return;
       el.style.position = 'relative';
@@ -717,6 +766,47 @@
       apply();
     });
     panButton.setAttribute('aria-label', '손 도구');
+    const setLive = (on) => {
+      if (!on && liveMode) {
+        // 꺼질 때 이미지 글자를 고른 채로 남지 않게 한다
+        const sel = window.getSelection();
+        if (sel && sel.rangeCount && !sel.isCollapsed && sel.getRangeAt(0).intersectsNode(content)) {
+          sel.removeAllRanges();
+        }
+      }
+      liveMode = on;
+      apply();
+      if (on) { // 숨겨 둔 사이 이미지 상자가 바뀌었을 수 있으니 층을 다시 맞춘다
+        const img = currentImg();
+        const layer = img && layers.get(img);
+        if (layer && layer.isConnected) fitLayer(img, layer);
+      }
+    };
+    st.setLive = setLive;
+    if (hasOcr()) {
+      st.toggleLive = () => {
+        if (liveMode) { setLive(false); return; }
+        const img = currentImg();
+        const key = img ? (img.currentSrc || img.src) : '';
+        if (img && ocrCache.has(key) && !ocrCache.get(key)) {
+          toast('이미지에서 글자를 찾지 못했습니다');
+          return;
+        }
+        if (!img || !ocrCache.has(key)) toast('텍스트를 인식하는 중입니다…');
+        setLive(true);
+      };
+      liveButton = button('', '텍스트 인식 (T)', st.toggleLive);
+      liveButton.innerHTML =
+        '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+        'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2' +
+        'M8 20H6a2 2 0 0 1-2-2v-2M8 9h8M8 12h8M8 15h5"/></svg>';
+      liveButton.style.display = 'inline-flex';
+      liveButton.style.alignItems = 'center';
+      liveButton.style.justifyContent = 'center';
+      liveButton.setAttribute('aria-label', '텍스트 인식');
+    }
+    st.apply = apply;
     apply();
     const host = box.querySelector('.lightbox-main') || box;
     if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
@@ -734,6 +824,7 @@
     if (e.key === '+' || e.key === '=') st.zoomBy(1.5);
     else if (e.key === '-' || e.key === '_') st.zoomBy(1 / 1.5);
     else if (e.key === '0') st.reset();
+    else if ((e.key === 't' || e.key === 'T') && st.toggleLive) st.toggleLive();
     else return;
     e.preventDefault();
     e.stopPropagation();
@@ -750,7 +841,19 @@
     if (st && st.src !== src) {
       st.src = src;
       st.reset();
+      st.setLive(false); // 다른 이미지는 일반 이미지 모드로 연다
     }
+  };
+
+  // OCR 이 끝나면 확대 보기의 텍스트 인식 단추 상태를 다시 그린다
+  const refreshViewer = (img) => {
+    const box = img && img.closest ? img.closest('mws-lightbox') : null;
+    const st = box && zoomStates.get(box);
+    if (!st || !st.apply) return;
+    const key = img.currentSrc || img.src;
+    const waiting = !!box.querySelector('mat-dialog-content.gm-live-on');
+    if (waiting && ocrCache.has(key) && !ocrCache.get(key)) toast('이미지에서 글자를 찾지 못했습니다');
+    st.apply(); // 글자가 없으면 여기서 텍스트 인식이 꺼진다
   };
 
   window.__gmLiveTextDebug = {
