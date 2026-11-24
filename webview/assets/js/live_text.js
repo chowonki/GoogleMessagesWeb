@@ -232,7 +232,8 @@
       '.gm-ocr-mark{position:absolute;background:rgba(26,115,232,.38);border-radius:3px}' +
       '.gm-ocr-hit{position:absolute;pointer-events:auto;cursor:pointer;border-radius:3px;' +
       'background:rgba(26,115,232,.25);box-shadow:0 0 0 1px rgba(26,115,232,.75)}' +
-      '.gm-ocr-hit:hover{background:rgba(26,115,232,.45)}');
+      '.gm-ocr-hit:hover{background:rgba(26,115,232,.45)}' +
+      '.gm-pan-mode .gm-ocr-line,.gm-pan-mode .gm-ocr-hit{pointer-events:none}');
     document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
   } catch (e) {}
 
@@ -583,18 +584,28 @@
     const content = box.querySelector('mat-dialog-content');
     if (!content) return;
     const st = { scale: 1, tx: 0, ty: 0, src: '', label: null, drag: null, dragged: false };
+    let panMode = false;
     zoomStates.set(box, st);
     content.style.overflow = 'hidden';
 
     const target = () => box.querySelector('mat-dialog-content mws-image');
     const apply = () => {
+      const zoomed = st.scale > MIN_ZOOM;
+      if (!zoomed) panMode = false;
+      content.classList.toggle('gm-pan-mode', panMode);
+      content.style.cursor = zoomed ? (st.drag ? 'grabbing' : 'grab') : '';
+      panButton.disabled = !zoomed;
+      panButton.setAttribute('aria-pressed', String(panMode));
+      panButton.style.opacity = zoomed ? '1' : '.45';
+      panButton.style.cursor = zoomed ? 'pointer' : 'default';
+      panButton.style.boxShadow = panMode ? 'inset 0 0 0 2px currentColor' : '';
+      st.label.textContent = Math.round(st.scale * 100) + '%';
       const el = target();
       if (!el) return;
       el.style.position = 'relative';
       el.style.transformOrigin = '50% 50%';
       el.style.transform = st.scale === 1 ? '' : 'translate(' + st.tx + 'px,' + st.ty + 'px) scale(' + st.scale + ')';
       el.style.cursor = st.scale > 1 ? (st.drag ? 'grabbing' : 'grab') : '';
-      if (st.label) st.label.textContent = Math.round(st.scale * 100) + '%';
     };
     // (cx, cy) 화면 좌표를 고정점으로 삼아 배율을 바꾼다
     const zoomTo = (scale, cx, cy) => {
@@ -602,20 +613,26 @@
       if (!el) return;
       scale = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, scale));
       if (scale === st.scale) return;
-      if (scale === 1) {
-        st.tx = 0; st.ty = 0;
-      } else {
-        const r = el.getBoundingClientRect();
-        const centerX = r.left + r.width / 2, centerY = r.top + r.height / 2;
-        if (cx === undefined) { cx = centerX; cy = centerY; }
-        const k = scale / st.scale;
-        st.tx += (cx - centerX) * (1 - k);
-        st.ty += (cy - centerY) * (1 - k);
+      if (scale === MIN_ZOOM) {
+        reset();
+        return;
       }
+      const r = el.getBoundingClientRect();
+      const centerX = r.left + r.width / 2, centerY = r.top + r.height / 2;
+      if (cx === undefined) { cx = centerX; cy = centerY; }
+      const k = scale / st.scale;
+      st.tx += (cx - centerX) * (1 - k);
+      st.ty += (cy - centerY) * (1 - k);
       st.scale = scale;
       apply();
     };
-    const reset = () => { st.scale = 1; st.tx = 0; st.ty = 0; apply(); };
+    const reset = () => {
+      st.scale = MIN_ZOOM;
+      st.tx = 0;
+      st.ty = 0;
+      if (st.drag) endDrag({ pointerId: st.drag.pointerId });
+      else apply();
+    };
     st.reset = reset;
 
     content.addEventListener('wheel', (e) => {
@@ -631,18 +648,19 @@
       else zoomTo(2.5, e.clientX, e.clientY);
     }, true);
 
-    // 끌어서 이동 (글자 층 위에서는 글자 선택이 우선)
+    // 손 도구를 켜면 이미지 속 글자 위에서도 끌어서 이동한다.
     content.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0 || st.scale <= 1) return;
-      if (e.target.closest && e.target.closest('.gm-ocr-line, .gm-ocr-hit, button')) return;
-      st.drag = { x: e.clientX, y: e.clientY, tx: st.tx, ty: st.ty };
+      if (e.button !== 0 || st.scale <= MIN_ZOOM || st.drag) return;
+      const excluded = panMode ? 'button' : '.gm-ocr-line, .gm-ocr-hit, button';
+      if (e.target.closest && e.target.closest(excluded)) return;
+      st.drag = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, tx: st.tx, ty: st.ty };
       st.dragged = false;
       content.setPointerCapture(e.pointerId);
       e.preventDefault();
       apply();
     });
     content.addEventListener('pointermove', (e) => {
-      if (!st.drag) return;
+      if (st.scale <= MIN_ZOOM || !st.drag || st.drag.pointerId !== e.pointerId) return;
       const dx = e.clientX - st.drag.x, dy = e.clientY - st.drag.y;
       if (Math.abs(dx) + Math.abs(dy) > 3) st.dragged = true;
       st.tx = st.drag.tx + dx;
@@ -650,13 +668,14 @@
       apply();
     });
     const endDrag = (e) => {
-      if (!st.drag) return;
+      if (!st.drag || st.drag.pointerId !== e.pointerId) return;
       st.drag = null;
       try { content.releasePointerCapture(e.pointerId); } catch (err) {}
       apply();
     };
     content.addEventListener('pointerup', endDrag);
     content.addEventListener('pointercancel', endDrag);
+    content.addEventListener('lostpointercapture', endDrag);
     // 끌고 난 직후의 클릭은 삼킨다
     content.addEventListener('click', (e) => {
       if (!st.dragged) return;
@@ -665,7 +684,7 @@
       e.stopPropagation();
     }, true);
 
-    // 아래쪽 가운데의 − 100% + 단추
+    // 아래쪽 가운데의 확대·축소 및 손 도구 단추
     const bar = document.createElement('div');
     bar.className = 'gm-zoom-bar';
     const s = bar.style;
@@ -691,6 +710,12 @@
     button('−', '축소 (-)', () => zoomTo(st.scale / 1.5));
     st.label = button('100%', '원래 크기 (0)', reset, true);
     button('+', '확대 (+)', () => zoomTo(st.scale * 1.5));
+    const panButton = button('✋︎', '손 도구', () => {
+      panMode = !panMode;
+      apply();
+    });
+    panButton.setAttribute('aria-label', '손 도구');
+    apply();
     const host = box.querySelector('.lightbox-main') || box;
     if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
     host.appendChild(bar);
