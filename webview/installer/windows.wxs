@@ -19,7 +19,7 @@
     <MajorUpgrade DowngradeErrorMessage="더 새 버전의 Google 메시지 웹이 이미 설치되어 있습니다." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
-    <Icon Id="AppIcon" SourceFile="..\windows\runner\resources\app_icon.ico" />
+    <Icon Id="AppIcon" SourceFile="$(sys.SOURCEFILEDIR)..\windows\runner\resources\app_icon.ico" />
     <Property Id="ARPPRODUCTICON" Value="AppIcon" />
     <Property Id="ARPNOMODIFY" Value="1" />
 
@@ -31,7 +31,7 @@
 
     <!-- Flutter 빌드 결과(exe, dll, data 폴더) 전부 -->
     <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
-      <Files Include="..\build\windows\x64\runner\Release\**" />
+      <Files Include="$(sys.SOURCEFILEDIR)..\build\windows\x64\runner\Release\**" />
     </ComponentGroup>
 
     <!-- 시작 메뉴 바로 가기 (현재 사용자 설치라 HKCU 값을 키로 둔다) -->
