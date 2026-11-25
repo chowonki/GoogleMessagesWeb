@@ -1,12 +1,13 @@
 name: Release
 
-# v<버전> 태그를 푸시하면 Windows·macOS 설치 파일을 빌드해 GitHub 릴리스로 올린다.
-# 태그 버전은 webview/pubspec.yaml 의 버전과 같아야 한다.
-# 릴리스 설명은 .github/release-notes.md 를 쓴다.
+# .github/release-notes.md 가 바뀐 커밋이 푸시되면(또는 수동 실행하면)
+# webview/pubspec.yaml 의 버전으로 Windows·macOS 설치 파일을 빌드해
+# v<버전> 태그와 GitHub 릴리스를 만든다. 그 태그가 이미 있으면 건너뛴다.
 on:
+  workflow_dispatch:
   push:
-    tags:
-      - 'v*'
+    paths:
+      - '.github/release-notes.md'
 
 permissions:
   contents: read
@@ -16,23 +17,28 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
+      exists: ${{ steps.v.outputs.exists }}
     steps:
       - uses: actions/checkout@v4
       - id: v
         run: |
           version=$(sed -n 's/^version: *\([0-9.]*\).*/\1/p' webview/pubspec.yaml)
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "::error::태그($GITHUB_REF_NAME)와 pubspec.yaml 버전(v$version)이 다릅니다."
-            exit 1
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
+            echo "::notice::v$version 은 이미 릴리스되어 건너뜁니다."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
   windows:
     needs: version
+    if: needs.version.outputs.exists == 'false'
     uses: ./.github/workflows/windows.yml
 
   macos:
     needs: version
+    if: needs.version.outputs.exists == 'false'
     uses: ./.github/workflows/macos.yml
 
   release:
@@ -53,5 +59,6 @@ jobs:
         run: |
           ls -l dist
           gh release create "v$VERSION" dist/* \
+            --target "$GITHUB_SHA" \
             --title "Google 메시지 웹 v$VERSION" \
             --notes-file .github/release-notes.md
