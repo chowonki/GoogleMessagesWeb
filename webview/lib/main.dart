@@ -176,6 +176,9 @@ const String kHardwareAccelerationKey = 'hardwareAcceleration';
 String _browserArguments({required bool hardwareAcceleration}) => [
       // Sec-CH-UA 의 "WebView2" 표기로 Google 로그인이 막히는 것을 막는다
       '--disable-features=UserAgentClientHint',
+      // 마우스 휠 스크롤을 한 번에 뚝뚝 끊기지 않고 미끄러지듯 움직이게 한다.
+      // Windows 의 '애니메이션 효과' 가 꺼져 있으면 WebView2 가 이를 끄므로 직접 켠다.
+      '--enable-smooth-scrolling',
       // 끄면 GPU 를 쓰지 않고 CPU 로만 그린다 (그래픽 드라이버 문제로 화면이 깨지거나
       // 깜빡일 때를 위한 것). 켜 두면 WebView2 기본대로 GPU 를 쓴다.
       if (!hardwareAcceleration) '--disable-gpu',
