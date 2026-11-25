@@ -2,6 +2,7 @@ name: macOS installer
 
 on:
   workflow_dispatch:
+  workflow_call:
   push:
     paths:
       - '.github/workflows/macos.yml'
