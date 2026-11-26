@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:local_notifier/local_notifier.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tray_manager/tray_manager.dart';
@@ -45,7 +46,7 @@ class ImageOcr {
       'flutter_assets',
       'assets',
       'ocr',
-      'gm_ocr.exe'
+      'gm_ocr.exe',
     ].join(Platform.pathSeparator);
     return File(path).existsSync() ? path : null;
   }
@@ -60,7 +61,9 @@ class ImageOcr {
       try {
         final json = await const MethodChannel('gm/ocr')
             .invokeMethod<String>(
-                'recognize', base64Decode(dataUrl.substring(comma + 1)))
+              'recognize',
+              base64Decode(dataUrl.substring(comma + 1)),
+            )
             .timeout(const Duration(seconds: 20));
         if (json == null || json.isEmpty) return null;
         return jsonDecode(json) as Map<String, dynamic>;
@@ -79,11 +82,16 @@ class ImageOcr {
       final dir = await getTemporaryDirectory();
       final sep = Platform.pathSeparator;
       file = File('${dir.path}${sep}gm_ocr_${pid}_${_seq++}.$ext');
-      await file.writeAsBytes(base64Decode(dataUrl.substring(comma + 1)),
-          flush: true);
-      final result = await Process.run(helper, [file.path],
-              stdoutEncoding: utf8, stderrEncoding: utf8)
-          .timeout(const Duration(seconds: 20));
+      await file.writeAsBytes(
+        base64Decode(dataUrl.substring(comma + 1)),
+        flush: true,
+      );
+      final result = await Process.run(
+        helper,
+        [file.path],
+        stdoutEncoding: utf8,
+        stderrEncoding: utf8,
+      ).timeout(const Duration(seconds: 20));
       final line = const LineSplitter()
           .convert(result.stdout as String)
           .lastWhere((l) => l.trim().isNotEmpty, orElse: () => '')
@@ -136,9 +144,13 @@ final Stopwatch _traceClock = Stopwatch()..start();
 void trace(String what) {
   if (!_tracing) return;
   try {
-    File('${Directory.systemTemp.path}${Platform.pathSeparator}gm_web_trace.log')
-        .writeAsStringSync('${_traceClock.elapsedMilliseconds} $what\n',
-            mode: FileMode.append, flush: true);
+    File(
+      '${Directory.systemTemp.path}${Platform.pathSeparator}gm_web_trace.log',
+    ).writeAsStringSync(
+      '${_traceClock.elapsedMilliseconds} $what\n',
+      mode: FileMode.append,
+      flush: true,
+    );
   } catch (_) {}
 }
 
@@ -174,15 +186,15 @@ const String kHardwareAccelerationKey = 'hardwareAcceleration';
 
 /// WebView2 에 넘기는 옵션
 String _browserArguments({required bool hardwareAcceleration}) => [
-      // Sec-CH-UA 의 "WebView2" 표기로 Google 로그인이 막히는 것을 막는다
-      '--disable-features=UserAgentClientHint',
-      // 마우스 휠 스크롤을 한 번에 뚝뚝 끊기지 않고 미끄러지듯 움직이게 한다.
-      // Windows 의 '애니메이션 효과' 가 꺼져 있으면 WebView2 가 이를 끄므로 직접 켠다.
-      '--enable-smooth-scrolling',
-      // 끄면 GPU 를 쓰지 않고 CPU 로만 그린다 (그래픽 드라이버 문제로 화면이 깨지거나
-      // 깜빡일 때를 위한 것). 켜 두면 WebView2 기본대로 GPU 를 쓴다.
-      if (!hardwareAcceleration) '--disable-gpu',
-    ].join(' ');
+  // Sec-CH-UA 의 "WebView2" 표기로 Google 로그인이 막히는 것을 막는다
+  '--disable-features=UserAgentClientHint',
+  // 마우스 휠 스크롤을 한 번에 뚝뚝 끊기지 않고 미끄러지듯 움직이게 한다.
+  // Windows 의 '애니메이션 효과' 가 꺼져 있으면 WebView2 가 이를 끄므로 직접 켠다.
+  '--enable-smooth-scrolling',
+  // 끄면 GPU 를 쓰지 않고 CPU 로만 그린다 (그래픽 드라이버 문제로 화면이 깨지거나
+  // 깜빡일 때를 위한 것). 켜 두면 WebView2 기본대로 GPU 를 쓴다.
+  if (!hardwareAcceleration) '--disable-gpu',
+].join(' ');
 
 /// Windows: WebView2 환경. 런타임이 없으면 [webViewAvailable] 이 false 가 된다.
 Future<void> _createWebViewEnvironment(SharedPreferences prefs) async {
@@ -197,8 +209,9 @@ Future<void> _createWebViewEnvironment(SharedPreferences prefs) async {
           userDataFolder:
               '${(await support).path}${Platform.pathSeparator}WebView2',
           additionalBrowserArguments: _browserArguments(
-              hardwareAcceleration:
-                  prefs.getBool(kHardwareAccelerationKey) ?? true),
+            hardwareAcceleration:
+                prefs.getBool(kHardwareAccelerationKey) ?? true,
+          ),
         ),
       );
     }
@@ -233,13 +246,16 @@ Future<void> main(List<String> args) async {
   final prefsReady = SharedPreferences.getInstance();
   // WebView 옵션(하드웨어 가속)이 설정에 있으므로 설정을 읽자마자 시작한다
   final webViewReady = prefsReady.then(_createWebViewEnvironment);
-  final scripts =
-      Future.wait(kPageScriptAssets.map((a) => rootBundle.loadString(a)));
+  final scripts = Future.wait(
+    kPageScriptAssets.map((a) => rootBundle.loadString(a)),
+  );
   // 알림은 한참 뒤에야 쓰이므로 기다리지 않는다
-  unawaited(localNotifier.setup(
-    appName: kAppName,
-    shortcutPolicy: ShortcutPolicy.requireCreate,
-  ));
+  unawaited(
+    localNotifier.setup(
+      appName: kAppName,
+      shortcutPolicy: ShortcutPolicy.requireCreate,
+    ),
+  );
 
   await windowManager.ensureInitialized();
   final prefs = await prefsReady;
@@ -255,8 +271,12 @@ Future<void> main(List<String> args) async {
     // Windows: 제목 표시줄 없이 창 단추만 페이지 머리말 위에 얹는다 (window_controls.dart)
     titleBarStyle: Platform.isWindows ? TitleBarStyle.hidden : null,
   );
-  pageChrome = ValueNotifier(PageChrome.load(
-      prefs, WidgetsBinding.instance.platformDispatcher.platformBrightness));
+  pageChrome = ValueNotifier(
+    PageChrome.load(
+      prefs,
+      WidgetsBinding.instance.platformDispatcher.platformBrightness,
+    ),
+  );
   await windowManager.waitUntilReadyToShow(options, () async {
     applyWindowFrameBrightness(pageChrome.value.isDark);
     await applyMacTitleBar(pageChrome.value);
@@ -328,8 +348,11 @@ Rect? _loadBounds(SharedPreferences prefs) {
 }
 
 class MessagesWebApp extends StatelessWidget {
-  const MessagesWebApp(
-      {super.key, required this.prefs, required this.webViewReady});
+  const MessagesWebApp({
+    super.key,
+    required this.prefs,
+    required this.webViewReady,
+  });
   final SharedPreferences prefs;
   final Future<void> webViewReady;
 
@@ -343,8 +366,9 @@ class MessagesWebApp extends StatelessWidget {
         debugShowCheckedModeBanner: false,
         theme: ThemeData(colorSchemeSeed: const Color(0xFF1A73E8)),
         darkTheme: ThemeData(
-            colorSchemeSeed: const Color(0xFF1A73E8),
-            brightness: Brightness.dark),
+          colorSchemeSeed: const Color(0xFF1A73E8),
+          brightness: Brightness.dark,
+        ),
         themeMode: colors.isDark ? ThemeMode.dark : ThemeMode.light,
         home: home,
       ),
@@ -392,8 +416,9 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
     _showControlsAfter(_splashLimit);
     quitApp = _quit;
     // 종료 시간을 재기 위한 것: 정해 둔 시간(초) 뒤에 스스로 끝낸다
-    final quitAfter =
-        int.tryParse(Platform.environment['GM_TRACE_QUIT_AFTER'] ?? '');
+    final quitAfter = int.tryParse(
+      Platform.environment['GM_TRACE_QUIT_AFTER'] ?? '',
+    );
     if (_tracing && quitAfter != null) {
       Timer(Duration(seconds: quitAfter), _quit);
     }
@@ -423,44 +448,58 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
     );
     await trayManager.setToolTip(kAppName);
     if (Platform.isWindows) _autostart = await autostartEnabled();
+    try {
+      _version = (await PackageInfo.fromPlatform()).version;
+    } catch (_) {}
     await _updateTrayMenu();
   }
 
   bool _autostart = false;
 
+  /// 앱 버전 (Windows: exe 의 버전 정보, macOS: Info.plist). 트레이 메뉴 맨 아래에 보인다.
+  String _version = '';
+
   bool get _hardwareAcceleration =>
       prefs.getBool(kHardwareAccelerationKey) ?? true;
 
   Future<void> _updateTrayMenu() async {
-    await trayManager.setContextMenu(Menu(items: [
-      MenuItem(key: 'show', label: '$kAppName 열기'),
-      MenuItem(key: 'reload', label: '새로고침'),
-      MenuItem.separator(),
-      MenuItem.checkbox(
-        key: 'closeToTray',
-        label: Platform.isMacOS ? '창을 닫아도 메뉴 막대에 남기기' : '닫기 버튼으로 트레이에 숨기기',
-        checked: _closeToTray,
+    await trayManager.setContextMenu(
+      Menu(
+        items: [
+          MenuItem(key: 'show', label: '$kAppName 열기'),
+          MenuItem(key: 'reload', label: '새로고침'),
+          MenuItem.separator(),
+          MenuItem.checkbox(
+            key: 'closeToTray',
+            label: Platform.isMacOS ? '창을 닫아도 메뉴 막대에 남기기' : '닫기 버튼으로 트레이에 숨기기',
+            checked: _closeToTray,
+          ),
+          if (Platform.isWindows)
+            MenuItem.checkbox(
+              key: 'autostart',
+              label: 'Windows 시작 시 자동 실행',
+              checked: _autostart,
+            ),
+          MenuItem.checkbox(
+            key: 'alwaysOnTop',
+            label: '항상 위에 표시',
+            checked: _alwaysOnTop,
+          ),
+          MenuItem.checkbox(
+            key: 'hardwareAcceleration',
+            // macOS 는 다시 시작하지 않고 바로 바꾼다 (페이지만 새로 불러온다)
+            label: Platform.isMacOS ? '하드웨어 가속 사용' : '하드웨어 가속 사용 (다시 시작)',
+            checked: _hardwareAcceleration,
+          ),
+          MenuItem.separator(),
+          MenuItem(key: 'quit', label: '종료'),
+          if (_version.isNotEmpty) ...[
+            MenuItem.separator(),
+            MenuItem(label: '버전 $_version', disabled: true),
+          ],
+        ],
       ),
-      if (Platform.isWindows)
-        MenuItem.checkbox(
-          key: 'autostart',
-          label: 'Windows 시작 시 자동 실행',
-          checked: _autostart,
-        ),
-      MenuItem.checkbox(
-        key: 'alwaysOnTop',
-        label: '항상 위에 표시',
-        checked: _alwaysOnTop,
-      ),
-      MenuItem.checkbox(
-        key: 'hardwareAcceleration',
-        // macOS 는 다시 시작하지 않고 바로 바꾼다 (페이지만 새로 불러온다)
-        label: Platform.isMacOS ? '하드웨어 가속 사용' : '하드웨어 가속 사용 (다시 시작)',
-        checked: _hardwareAcceleration,
-      ),
-      MenuItem.separator(),
-      MenuItem(key: 'quit', label: '종료'),
-    ]));
+    );
   }
 
   // macOS 메뉴 막대 아이콘은 누르면 메뉴가 뜨는 것이 관례다
@@ -518,8 +557,9 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
     for (var i = 0; i < 20; i++) {
       try {
         final n = await const MethodChannel('gm/app').invokeMethod<int>(
-            'configureWebView',
-            {'hardwareAcceleration': _hardwareAcceleration});
+          'configureWebView',
+          {'hardwareAcceleration': _hardwareAcceleration},
+        );
         if ((n ?? 0) > 0) {
           if (reloadAfter) await _web?.reload();
           return;
@@ -535,11 +575,10 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
   /// (runner/main.cpp 의 --wait-for-exit). 창이 숨겨져 있었으면 다시 숨긴 채로 뜬다.
   Future<void> _restart() async {
     final visible = await windowManager.isVisible();
-    await Process.start(
-      Platform.resolvedExecutable,
-      ['--wait-for-exit=$pid', if (!visible) '--hidden'],
-      mode: ProcessStartMode.detached,
-    );
+    await Process.start(Platform.resolvedExecutable, [
+      '--wait-for-exit=$pid',
+      if (!visible) '--hidden',
+    ], mode: ProcessStartMode.detached);
     await _quit();
   }
 
@@ -687,13 +726,16 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
   }
 
   void _notify(String title, String body) {
-    final n =
-        LocalNotification(title: title.isEmpty ? kAppName : title, body: body);
+    final n = LocalNotification(
+      title: title.isEmpty ? kAppName : title,
+      body: body,
+    );
     n.onClick = () async {
       await showMainWindow();
       await _web?.evaluateJavascript(
-          source:
-              'window.__gmNotificationClicked && window.__gmNotificationClicked();');
+        source:
+            'window.__gmNotificationClicked && window.__gmNotificationClicked();',
+      );
     };
     n.show();
     _flash();
@@ -707,8 +749,9 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
     if (count == _unread) return;
     if (count > _unread) _flash();
     _unread = count;
-    trayManager
-        .setToolTip(count > 0 ? '$kAppName - 안 읽은 메시지 $count개' : kAppName);
+    trayManager.setToolTip(
+      count > 0 ? '$kAppName - 안 읽은 메시지 $count개' : kAppName,
+    );
     _applyBadge();
   }
 
@@ -771,9 +814,10 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
             Positioned.fill(child: content!),
             // 창을 끌어 옮기는 손잡이: 머리말의 빈 구간들.
             // 페이지가 아직 없거나 불러오지 못했을 때는 맨 위 띠 전체.
-            for (final (left, width) in pageShown
-                ? chrome.dragSpans
-                : const [(0.0, double.infinity)])
+            for (final (left, width)
+                in pageShown
+                    ? chrome.dragSpans
+                    : const [(0.0, double.infinity)])
               Positioned(
                 top: 0,
                 left: left,
@@ -795,7 +839,11 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
             ),
             if (!_maximized)
               const Positioned(
-                  top: 0, left: 0, right: 0, child: TopResizeEdge()),
+                top: 0,
+                left: 0,
+                right: 0,
+                child: TopResizeEdge(),
+              ),
           ],
         ),
       ),
@@ -848,7 +896,9 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
               _configureMacWebView(reloadAfter: true);
             }
             c.addJavaScriptHandler(
-                handlerName: 'gmTheme', callback: _onPageChrome);
+              handlerName: 'gmTheme',
+              callback: _onPageChrome,
+            );
             c.addJavaScriptHandler(
               handlerName: 'gmOcr',
               callback: (args) async {
@@ -930,12 +980,15 @@ class _HomePageState extends State<HomePage> with WindowListener, TrayListener {
                   children: [
                     const Text('페이지를 불러오지 못했습니다.'),
                     const SizedBox(height: 4),
-                    Text(_loadError!,
-                        style: Theme.of(context).textTheme.bodySmall),
+                    Text(
+                      _loadError!,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
                     const SizedBox(height: 16),
                     FilledButton(
                       onPressed: () => _web?.loadUrl(
-                          urlRequest: URLRequest(url: WebUri(kHomeUrl))),
+                        urlRequest: URLRequest(url: WebUri(kHomeUrl)),
+                      ),
                       child: const Text('다시 시도'),
                     ),
                   ],

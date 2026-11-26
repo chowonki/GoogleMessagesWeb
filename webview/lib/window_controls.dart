@@ -91,12 +91,16 @@ Color _foreground(Color background) =>
 /// (다른 Flutter 앱도 창 클래스 이름이 같으므로 프로세스까지 확인한다)
 int _findOwnWindow() {
   final user32 = DynamicLibrary.open('user32.dll');
-  final findWindowEx = user32.lookupFunction<
-      IntPtr Function(IntPtr, IntPtr, Pointer<Utf16>, Pointer<Utf16>),
-      int Function(int, int, Pointer<Utf16>, Pointer<Utf16>)>('FindWindowExW');
-  final getProcessId = user32.lookupFunction<
-      Uint32 Function(IntPtr, Pointer<Uint32>),
-      int Function(int, Pointer<Uint32>)>('GetWindowThreadProcessId');
+  final findWindowEx = user32
+      .lookupFunction<
+        IntPtr Function(IntPtr, IntPtr, Pointer<Utf16>, Pointer<Utf16>),
+        int Function(int, int, Pointer<Utf16>, Pointer<Utf16>)
+      >('FindWindowExW');
+  final getProcessId = user32
+      .lookupFunction<
+        Uint32 Function(IntPtr, Pointer<Uint32>),
+        int Function(int, Pointer<Uint32>)
+      >('GetWindowThreadProcessId');
   final className = 'FLUTTER_RUNNER_WIN32_WINDOW'.toNativeUtf16();
   final owner = calloc<Uint32>();
   try {
@@ -118,9 +122,11 @@ void applyWindowFrameBrightness(bool dark) {
   try {
     final hwnd = _findOwnWindow();
     if (hwnd == 0) return;
-    final setAttribute = DynamicLibrary.open('dwmapi.dll').lookupFunction<
-        Int32 Function(IntPtr, Uint32, Pointer<Int32>, Uint32),
-        int Function(int, int, Pointer<Int32>, int)>('DwmSetWindowAttribute');
+    final setAttribute = DynamicLibrary.open('dwmapi.dll')
+        .lookupFunction<
+          Int32 Function(IntPtr, Uint32, Pointer<Int32>, Uint32),
+          int Function(int, int, Pointer<Int32>, int)
+        >('DwmSetWindowAttribute');
     final value = calloc<Int32>()..value = dark ? 1 : 0;
     setAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, value, 4);
     calloc.free(value);
@@ -134,9 +140,11 @@ void applyWindowFrameBrightness(bool dark) {
 void allowForegroundHandOff() {
   if (!Platform.isWindows) return;
   try {
-    DynamicLibrary.open('user32.dll')
-        .lookupFunction<Int32 Function(Uint32), int Function(int)>(
-            'AllowSetForegroundWindow')(0xFFFFFFFF /* ASFW_ANY */);
+    DynamicLibrary.open(
+      'user32.dll',
+    ).lookupFunction<Int32 Function(Uint32), int Function(int)>(
+      'AllowSetForegroundWindow',
+    )(0xFFFFFFFF /* ASFW_ANY */);
   } catch (_) {}
 }
 
@@ -206,12 +214,12 @@ class TopResizeEdge extends StatelessWidget {
   const TopResizeEdge({super.key});
 
   static Widget _grip(ResizeEdge edge, MouseCursor cursor) => MouseRegion(
-        cursor: cursor,
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onPanStart: (_) => windowManager.startResizing(edge),
-        ),
-      );
+    cursor: cursor,
+    child: GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onPanStart: (_) => windowManager.startResizing(edge),
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -360,9 +368,10 @@ class _CaptionButtonPainter extends CustomPainter {
     // 아이콘: 평소에는 조금 흐리게, 마우스를 올리면 빛의 색으로 또렷하게
     final rest = foreground.withValues(alpha: 0.78);
     canvas.drawPath(
-        path,
-        stroke(Color.lerp(rest, _glow, t)!, 1)
-          ..isAntiAlias = glyph != _Glyph.minimize);
+      path,
+      stroke(Color.lerp(rest, _glow, t)!, 1)
+        ..isAntiAlias = glyph != _Glyph.minimize,
+    );
   }
 
   /// 8×8 그림을 가운데에. 선이 흐려지지 않게 픽셀 가운데(.5)에 맞춘다.
@@ -377,13 +386,17 @@ class _CaptionButtonPainter extends CustomPainter {
           ..moveTo(x, y + s / 2)
           ..lineTo(x + s, y + s / 2);
       case _Glyph.maximize:
-        return Path()
-          ..addRRect(
-              RRect.fromRectAndRadius(Rect.fromLTWH(x, y, s, s), radius));
+        return Path()..addRRect(
+          RRect.fromRectAndRadius(Rect.fromLTWH(x, y, s, s), radius),
+        );
       case _Glyph.restore:
         return Path()
-          ..addRRect(RRect.fromRectAndRadius(
-              Rect.fromLTWH(x, y + 2, s - 2, s - 2), radius))
+          ..addRRect(
+            RRect.fromRectAndRadius(
+              Rect.fromLTWH(x, y + 2, s - 2, s - 2),
+              radius,
+            ),
+          )
           // 뒤에 겹친 창: 위쪽과 오른쪽 변만 보인다
           ..moveTo(x + 2.5, y)
           ..lineTo(x + s - 1.2, y)
