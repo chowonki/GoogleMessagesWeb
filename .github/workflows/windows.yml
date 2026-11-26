@@ -2,6 +2,7 @@ name: Windows installer
 
 on:
   workflow_dispatch:
+  workflow_call:
   push:
     paths:
       - '.github/workflows/windows.yml'
@@ -43,7 +44,8 @@ jobs:
             choco install innosetup --yes --no-progress
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
-          & $iscc installer\windows.iss
+          $version = (Select-String -Path pubspec.yaml -Pattern '^version:\s*([0-9.]+)').Matches[0].Groups[1].Value
+          & $iscc "/DAppVersion=$version" installer\windows.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package MSI
         shell: pwsh

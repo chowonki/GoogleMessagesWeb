@@ -5,7 +5,8 @@
 
 ## 기능
 
-- **트레이**: 닫기 버튼으로 트레이에 숨기기, Windows 시작 시 자동 실행, 항상 위에 표시
+- **트레이**: 닫기 버튼으로 트레이에 숨기기, Windows 시작 시 자동 실행, 항상 위에 표시. 메뉴 맨 아래에 앱 버전 표시
+- **부드러운 스크롤** (Windows): 휠 스크롤을 미끄러지듯 움직이게 하고(`--enable-smooth-scrolling`), 터치패드의 작은 이동도 버리지 않음
 - **알림**: 웹 알림을 Windows 알림으로 표시, 클릭하면 해당 대화 열기
 - **작업 표시줄**: 안 읽은 개수 배지, 새 알림 시 깜빡임 (macOS: Dock 배지, 창이 뒤에 있으면 Dock 아이콘 튕김)
 - **우클릭 메뉴**: 대화 목록·말풍선·대화 상단 막대를 우클릭하면 그 항목의 ⋮ 메뉴를 마우스 위치에 표시
@@ -67,6 +68,7 @@ MSI 는 회사 일괄 배포용입니다. 현재 사용자 범위로 `%LOCALAPPD
 exe 로 설치했던 것을 MSI 로 바꾸려면 exe 설치본을 먼저 제거하세요.
 
 버전은 `pubspec.yaml` 의 `version` 과 `installer/windows.iss` 의 `AppVersion` 두 곳을 함께 올립니다.
+(Actions 빌드는 `pubspec.yaml` 의 버전을 설치 파일에 넘기므로 둘이 달라도 릴리스 파일은 `pubspec.yaml` 을 따릅니다)
 
 ## 빌드 (macOS)
 
@@ -78,6 +80,13 @@ tools/build_macos.sh --open   # 빌드 뒤 바로 실행
 ```
 
 개발자 인증서 없이 임시 서명(ad-hoc)을 하므로, 다른 Mac 에서 처음 열 때는 Finder 에서 앱을 우클릭 → **열기**로 한 번 허용해야 합니다.
+
+## 릴리스 (GitHub Actions)
+
+1. `pubspec.yaml` 의 `version` (과 `installer/windows.iss` 의 `AppVersion`) 을 올린다.
+2. `../.github/release-notes.md` 에 이번 릴리스 설명을 쓴다.
+3. main 에 합친다. `Release` 워크플로가 Windows(exe·msi)·macOS(dmg)를 빌드해 `v<버전>` 태그와 릴리스를 만든다.
+   같은 버전 태그가 이미 있으면 건너뛴다. Actions 화면에서 수동으로 실행할 수도 있다.
 
 ## 참고
 

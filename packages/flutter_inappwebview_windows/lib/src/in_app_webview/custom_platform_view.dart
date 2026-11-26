@@ -395,8 +395,10 @@ class _CustomPlatformViewState extends State<CustomPlatformView> {
                       }
                     },
                     onPointerPanZoomUpdate: (ev) {
+                      // Same physical pixel scale as the wheel path above.
+                      final dpr = View.of(context).devicePixelRatio;
                       _controller._setScrollDelta(
-                          ev.panDelta.dx, ev.panDelta.dy);
+                          ev.panDelta.dx * dpr, ev.panDelta.dy * dpr);
                     },
                     child: MouseRegion(
                         cursor: _cursor,

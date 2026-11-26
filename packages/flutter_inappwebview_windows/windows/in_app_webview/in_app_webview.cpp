@@ -1808,9 +1808,16 @@ namespace flutter_inappwebview_plugin
       linesPerStep = 3;
     }
     const auto pixelsPerStep = std::floor(linesPerStep * 100.0 / 3.0);
-    const auto wheelDelta = std::clamp(delta * WHEEL_DELTA / pixelsPerStep,
-      -32768.0, 32767.0);
-    const auto offset = static_cast<int>(std::lround(wheelDelta));
+    // Keep the fraction that does not fit in a whole wheel unit, so slow
+    // touchpad movements still scroll instead of being rounded away.
+    auto& remainder = horizontal ? scrollRemainderX_ : scrollRemainderY_;
+    if ((remainder > 0.0 && delta < 0.0) || (remainder < 0.0 && delta > 0.0)) {
+      remainder = 0.0;
+    }
+    const auto wheelDelta = std::clamp(
+      remainder + delta * WHEEL_DELTA / pixelsPerStep, -32768.0, 32767.0);
+    const auto offset = static_cast<int>(std::trunc(wheelDelta));
+    remainder = wheelDelta - offset;
     if (offset == 0) {
       return;
     }
