@@ -57,10 +57,16 @@ jobs:
           $version = (Select-String -Path pubspec.yaml -Pattern '^version:\s*([0-9.]+)').Matches[0].Groups[1].Value
           & $wix build installer\windows.wxs -arch x64 -d "Version=$version" -o "dist\GoogleMessagesWeb-$version.msi"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package portable zip
+        shell: pwsh
+        working-directory: webview
+        run: |
+          ./portable/build.ps1
       - uses: actions/upload-artifact@v4
         with:
           name: GoogleMessagesWeb-Windows
           path: |
             webview/dist/GoogleMessagesWeb-Setup-*.exe
             webview/dist/GoogleMessagesWeb-*.msi
+            webview/dist/GoogleMessagesWeb-Portable-*.zip
           if-no-files-found: error

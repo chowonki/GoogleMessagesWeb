@@ -61,7 +61,16 @@ flutter build windows --release
 
 # 4) (선택) MSI → dist\GoogleMessagesWeb-<버전>.msi  (WiX 5: dotnet tool install --global wix --version 5.0.2)
 wix build installer\windows.wxs -arch x64 -d Version=<버전> -o dist\GoogleMessagesWeb-<버전>.msi
+
+# 5) (선택) 포터블 → dist\GoogleMessagesWeb-Portable-<버전>.zip
+powershell -ExecutionPolicy Bypass -File portable\build.ps1
 ```
+
+포터블 버전은 설치 없이 압축만 풀어 쓰는 묶음입니다. `GoogleMessagesWeb.exe`(실행 파일), `App\`(프로그램),
+`Data\`(설정·로그인 정보) 로 이루어져 있고, 폴더째 옮기면 로그인 상태도 함께 옮겨집니다.
+`App\portable` 파일이 있으면 앱이 `%APPDATA%` 대신 `Data\` 를 씁니다(`lib/portable.dart`).
+다만 Windows 알림을 위한 시작 메뉴 바로 가기와, 트레이 메뉴에서 자동 실행을 켰을 때의 레지스트리 값은
+PC 쪽에 남습니다. 설치본과 포터블은 동시에 실행되지 않습니다(먼저 켠 쪽이 열립니다).
 
 MSI 는 회사 일괄 배포용입니다. 현재 사용자 범위로 `%LOCALAPPDATA%\Programs\GoogleMessagesWeb` 에 설치되고
 (exe 설치본과 다른 폴더), 시작 메뉴 바로 가기만 만듭니다. 자동 실행은 앱의 트레이 메뉴에서 켭니다.
