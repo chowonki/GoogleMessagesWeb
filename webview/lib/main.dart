@@ -17,6 +17,7 @@ import 'package:window_manager/window_manager.dart';
 import 'package:windows_single_instance/windows_single_instance.dart';
 import 'package:windows_taskbar/windows_taskbar.dart';
 
+import 'portable.dart';
 import 'window_controls.dart';
 
 const String kAppName = 'Google 메시지';
@@ -240,6 +241,9 @@ Future<void> main(List<String> args) async {
     // 끝낼 앱이 없었다
     if (args.contains('--quit')) exit(0);
   }
+
+  // 포터블 버전이면 설정·로그인 정보를 프로그램 옆 Data 폴더에 둔다 (설정을 읽기 전에)
+  setUpPortableMode();
 
   // 서로 기다릴 필요가 없는 준비는 한꺼번에 시작한다.
   // 창은 WebView 를 기다리지 않고 먼저 띄운다.

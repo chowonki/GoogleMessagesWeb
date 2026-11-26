@@ -18,6 +18,11 @@ dependencies:
   shared_preferences: ^2.3.2
   url_launcher: ^6.3.1
   path_provider: ^2.1.4
+  # 포터블 버전이 데이터 위치를 바꾸는 데 쓴다 (lib/portable.dart)
+  path_provider_platform_interface: ^2.1.2
+  path_provider_windows: ^2.3.0
+  shared_preferences_platform_interface: ^2.4.1
+  shared_preferences_windows: ^2.4.1
   windows_single_instance: ^1.0.1
   windows_taskbar: ^1.1.2
   ffi: ^2.1.3
