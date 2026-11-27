@@ -1,7 +1,7 @@
 name: google_messages_web
 description: Google Messages for Web 을 WebView 로 감싼 데스크톱 앱 (Windows / macOS)
 publish_to: 'none'
-version: 1.5.11+24
+version: 1.5.12+25
 
 environment:
   sdk: ">=3.10.0 <4.0.0"
