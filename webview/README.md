@@ -77,7 +77,7 @@ MSI 는 회사 일괄 배포용입니다. 현재 사용자 범위로 `%LOCALAPPD
 exe 로 설치했던 것을 MSI 로 바꾸려면 exe 설치본을 먼저 제거하세요.
 
 버전은 `pubspec.yaml` 의 `version` 과 `installer/windows.iss` 의 `AppVersion` 두 곳을 함께 올립니다.
-(Actions 빌드는 `pubspec.yaml` 의 버전을 설치 파일에 넘기므로 둘이 달라도 릴리스 파일은 `pubspec.yaml` 을 따릅니다)
+(`tools/release_windows.ps1` 은 `pubspec.yaml` 의 버전을 설치 파일에 넘기므로 둘이 달라도 릴리스 파일은 `pubspec.yaml` 을 따릅니다)
 
 ## 빌드 (macOS)
 
@@ -90,12 +90,25 @@ tools/build_macos.sh --open   # 빌드 뒤 바로 실행
 
 개발자 인증서 없이 임시 서명(ad-hoc)을 하므로, 다른 Mac 에서 처음 열 때는 Finder 에서 앱을 우클릭 → **열기**로 한 번 허용해야 합니다.
 
-## 릴리스 (GitHub Actions)
+## 릴리스
+
+Windows 파일은 개발 PC에서, macOS 파일은 GitHub Actions 에서 빌드해 같은 릴리스에 올립니다.
 
 1. `pubspec.yaml` 의 `version` (과 `installer/windows.iss` 의 `AppVersion`) 을 올린다.
 2. `../.github/release-notes.md` 에 이번 릴리스 설명을 쓴다.
-3. main 에 합친다. `Release` 워크플로가 Windows(exe·msi)·macOS(dmg)를 빌드해 `v<버전>` 태그와 릴리스를 만든다.
-   같은 버전 태그가 이미 있으면 건너뛴다. Actions 화면에서 수동으로 실행할 수도 있다.
+3. main 에 합친다. `Release` 워크플로가 macOS dmg 를 빌드해 `v<버전>` 릴리스(초안)에 올린다.
+4. 개발 PC에서 main 을 받아 온 뒤 Windows 파일(exe·msi·포터블 zip)을 빌드해 올린다.
+   ```powershell
+   git switch main; git pull
+   powershell -ExecutionPolicy Bypass -File tools\release_windows.ps1
+   ```
+   3 과 4 는 순서가 바뀌어도 된다. 먼저 끝난 쪽이 초안을 만들고, exe 와 dmg 가 모두 모이면 게시된다.
+   이미 게시된 버전이면 둘 다 건너뛴다. 빌드만 하려면 `-NoUpload` 를 붙인다.
+   Inno Setup 6 이나 WiX 5 가 없으면 설치할지 묻고 설치한다(Inno Setup 은 winget, WiX 는 dotnet 도구).
+   묻지 않고 설치하려면 `-Yes` 를 붙인다. WiX 를 설치하지 않으면 MSI 만 빼고 만든다.
+   Flutter 가 없으면 설치 안내를 보여 주고 멈춘다.
+
+`Windows installer` 워크플로는 Actions 화면에서 수동으로만 실행된다.
 
 ## 참고
 
