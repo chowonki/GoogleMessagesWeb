@@ -7,9 +7,12 @@
 #
 #   tools\release_windows.ps1             빌드 + 업로드 (main 과 같은 커밋에서만)
 #   tools\release_windows.ps1 -NoUpload   빌드만
+#   tools\release_windows.ps1 -Yes        없는 도구를 묻지 않고 설치
+# 필요한 도구(Inno Setup, WiX)가 없으면 설치할지 물어보고 설치한다.
 param(
     [switch]$NoUpload,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$Yes
 )
 $ErrorActionPreference = 'Stop'
 $web = Split-Path $PSScriptRoot -Parent
@@ -20,6 +23,63 @@ function Invoke-Step([string]$name, [scriptblock]$body) {
     Write-Host "== $name" -ForegroundColor Cyan
     & $body
     if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw "$name 실패 (exit $LASTEXITCODE)" }
+}
+
+# 없는 도구를 설치할지 묻는다. 답할 수 없는(대화형이 아닌) 실행에서는 설치하지 않는다.
+function Confirm-Install([string]$what) {
+    if ($Yes) { return $true }
+    if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
+        Write-Warning "$what 이(가) 없습니다. 설치하려면 -Yes 를 붙여 다시 실행하세요."
+        return $false
+    }
+    $answer = Read-Host "$what 이(가) 없습니다. 지금 설치할까요? [Y/n]"
+    return ($answer -eq '' -or $answer -match '^(y|yes|ㅛ|네|예)$')
+}
+
+function Find-Iscc {
+    @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") |
+        Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+
+function Find-Wix {
+    $cmd = Get-Command wix -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    $local = "$env:USERPROFILE\.dotnet\tools\wix.exe"
+    if (Test-Path $local) { return $local }
+    return $null
+}
+
+# Inno Setup 6 (exe 설치 파일). 없으면 winget 으로 현재 사용자에게 설치한다.
+function Get-Iscc {
+    $iscc = Find-Iscc
+    if ($iscc) { return $iscc }
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { throw 'Inno Setup 6 이 없고 winget 도 없습니다. https://jrsoftware.org/isdl.php 에서 설치하세요.' }
+    if (-not (Confirm-Install 'Inno Setup 6 (winget: JRSoftware.InnoSetup)')) { throw 'Inno Setup 6 이 없어 exe 설치 파일을 만들 수 없습니다.' }
+    winget install --id JRSoftware.InnoSetup -e --scope user --accept-package-agreements --accept-source-agreements --disable-interactivity
+    $iscc = Find-Iscc
+    if (-not $iscc) { throw 'Inno Setup 6 을 설치했지만 ISCC.exe 를 찾지 못했습니다.' }
+    return $iscc
+}
+
+# WiX 5 (MSI). 없으면 dotnet 도구로 설치한다. 설치하지 않으면 MSI 만 건너뛴다.
+function Get-Wix {
+    $wix = Find-Wix
+    if ($wix) { return $wix }
+    if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
+        Write-Warning 'WiX 가 없고 .NET SDK 도 없어 MSI 는 만들지 않습니다.'
+        return $null
+    }
+    if (-not (Confirm-Install 'WiX 5.0.2 (dotnet tool, nuget.org)')) {
+        Write-Warning 'WiX 를 설치하지 않아 MSI 는 만들지 않습니다.'
+        return $null
+    }
+    dotnet tool install --global wix --version 5.0.2
+    if ($LASTEXITCODE -ne 0) { throw 'WiX 설치 실패' }
+    return Find-Wix
+}
+
+if (-not (Get-Command flutter -ErrorAction SilentlyContinue)) {
+    throw 'Flutter 가 없습니다. https://docs.flutter.dev/get-started/install/windows 에서 설치한 뒤 PATH 에 넣으세요.'
 }
 
 $version = (Select-String -Path pubspec.yaml -Pattern '^version:\s*([0-9.]+)').Matches[0].Groups[1].Value
@@ -40,6 +100,10 @@ if (-not $NoUpload) {
 
 $dist = Join-Path $web 'dist'
 if (-not $SkipBuild) {
+    # 도구는 오래 걸리는 빌드 전에 먼저 갖춘다
+    $iscc = Get-Iscc
+    $wix = Get-Wix
+
     Invoke-Step 'flutter pub get' { flutter pub get }
     # 증분 빌드는 WebView 플러그인에서 실패하므로 매번 지운다
     Remove-Item -Recurse -Force build\windows -ErrorAction SilentlyContinue
@@ -48,17 +112,9 @@ if (-not $SkipBuild) {
     New-Item -ItemType Directory -Force $dist | Out-Null
     Get-ChildItem $dist -File -Filter 'GoogleMessagesWeb-*' | Remove-Item -Force
 
-    $iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe") |
-        Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $iscc) { throw 'Inno Setup 6 (ISCC.exe) 이 없습니다.' }
     Invoke-Step 'Inno Setup' { & $iscc /Q "/DAppVersion=$version" installer\windows.iss }
-
-    $wix = Get-Command wix -ErrorAction SilentlyContinue
-    if (-not $wix -and (Test-Path "$env:USERPROFILE\.dotnet\tools\wix.exe")) { $wix = "$env:USERPROFILE\.dotnet\tools\wix.exe" }
     if ($wix) {
         Invoke-Step 'MSI (WiX)' { & $wix build installer\windows.wxs -arch x64 -d "Version=$version" -o "$dist\GoogleMessagesWeb-$version.msi" }
-    } else {
-        Write-Warning 'WiX 가 없어 MSI 는 만들지 않습니다. (dotnet tool install --global wix --version 5.0.2)'
     }
 
     Invoke-Step '포터블' { & (Join-Path $web 'portable\build.ps1') -Version $version }

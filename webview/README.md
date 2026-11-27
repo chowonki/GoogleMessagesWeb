@@ -104,7 +104,9 @@ Windows 파일은 개발 PC에서, macOS 파일은 GitHub Actions 에서 빌드�
    ```
    3 과 4 는 순서가 바뀌어도 된다. 먼저 끝난 쪽이 초안을 만들고, exe 와 dmg 가 모두 모이면 게시된다.
    이미 게시된 버전이면 둘 다 건너뛴다. 빌드만 하려면 `-NoUpload` 를 붙인다.
-   MSI 는 WiX 가 있을 때만 만든다.
+   Inno Setup 6 이나 WiX 5 가 없으면 설치할지 묻고 설치한다(Inno Setup 은 winget, WiX 는 dotnet 도구).
+   묻지 않고 설치하려면 `-Yes` 를 붙인다. WiX 를 설치하지 않으면 MSI 만 빼고 만든다.
+   Flutter 가 없으면 설치 안내를 보여 주고 멈춘다.
 
 `Windows installer` 워크플로는 Actions 화면에서 수동으로만 실행된다.
 
