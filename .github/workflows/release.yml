@@ -1,8 +1,12 @@
 name: Release
 
 # main 에 .github/release-notes.md 가 바뀐 커밋이 들어오면(또는 수동 실행하면)
-# webview/pubspec.yaml 의 버전으로 Windows·macOS 설치 파일을 빌드해
-# v<버전> 태그와 GitHub 릴리스를 만든다. 그 태그가 이미 있으면 건너뛴다.
+# webview/pubspec.yaml 의 버전으로 macOS 설치 파일(dmg)을 빌드해 v<버전> 릴리스에 올린다.
+# Windows 파일(exe·msi·포터블 zip)은 Actions 가 아니라 개발 PC에서 빌드해
+# webview/tools/release_windows.ps1 로 같은 릴리스에 올린다.
+#
+# 둘 중 먼저 끝난 쪽이 초안(draft) 릴리스를 만들고, 나중 쪽이 파일을 더한 뒤
+# Windows 설치 파일과 dmg 가 모두 있으면 게시한다. 이미 게시된 버전이면 건너뛴다.
 on:
   workflow_dispatch:
   push:
@@ -19,32 +23,30 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
-      exists: ${{ steps.v.outputs.exists }}
+      published: ${{ steps.v.outputs.published }}
     steps:
       - uses: actions/checkout@v4
       - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           version=$(sed -n 's/^version: *\([0-9.]*\).*/\1/p' webview/pubspec.yaml)
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
-            echo "::notice::v$version 은 이미 릴리스되어 건너뜁니다."
-            echo "exists=true" >> "$GITHUB_OUTPUT"
+          draft=$(gh release view "v$version" --json isDraft --jq .isDraft 2>/dev/null || echo none)
+          if [ "$draft" = "false" ]; then
+            echo "::notice::v$version 은 이미 게시되어 건너뜁니다."
+            echo "published=true" >> "$GITHUB_OUTPUT"
           else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "published=false" >> "$GITHUB_OUTPUT"
           fi
-
-  windows:
-    needs: version
-    if: needs.version.outputs.exists == 'false'
-    uses: ./.github/workflows/windows.yml
 
   macos:
     needs: version
-    if: needs.version.outputs.exists == 'false'
+    if: needs.version.outputs.published == 'false'
     uses: ./.github/workflows/macos.yml
 
   release:
-    needs: [version, windows, macos]
+    needs: [version, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -54,13 +56,25 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Create release
+      - name: Add dmg to release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           ls -l dist
-          gh release create "v$VERSION" dist/* \
-            --target "$GITHUB_SHA" \
-            --title "Google 메시지 웹 v$VERSION" \
-            --notes-file .github/release-notes.md
+          tag="v$VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/*.dmg --clobber
+          else
+            gh release create "$tag" dist/*.dmg --draft \
+              --target "$GITHUB_SHA" \
+              --title "Google 메시지 웹 v$VERSION" \
+              --notes-file .github/release-notes.md
+          fi
+          assets=$(gh release view "$tag" --json assets --jq '.assets[].name')
+          if echo "$assets" | grep -q "GoogleMessagesWeb-Setup-$VERSION.exe"; then
+            gh release edit "$tag" --draft=false --latest
+            echo "::notice::$tag 을 게시했습니다."
+          else
+            echo "::notice::$tag 초안에 dmg 를 올렸습니다. Windows 파일은 개발 PC에서 tools/release_windows.ps1 로 올리면 게시됩니다."
+          fi

@@ -1,13 +1,9 @@
 name: Windows installer
 
+# Windows 빌드는 개발 PC에서 한다 (webview/tools/release_windows.ps1).
+# 이 워크플로는 필요할 때 Actions 화면에서 수동으로만 실행한다.
 on:
   workflow_dispatch:
-  workflow_call:
-  push:
-    paths:
-      - '.github/workflows/windows.yml'
-      - 'packages/**'
-      - 'webview/**'
 
 permissions:
   contents: read
