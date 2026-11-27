@@ -472,11 +472,56 @@ enum WinToast::ShortcutResult WinToast::createShortcut() {
 
     bool wasChanged;
     HRESULT hr = validateShellLinkHelper(wasChanged);
-    if (SUCCEEDED(hr))
+    if (SUCCEEDED(hr)) {
+        removeDeadShortcuts();
         return wasChanged ? SHORTCUT_WAS_CHANGED : SHORTCUT_UNCHANGED;
+    }
 
     hr = createShellLinkHelper();
+    if (SUCCEEDED(hr)) removeDeadShortcuts();
     return SUCCEEDED(hr) ? SHORTCUT_WAS_CREATED : SHORTCUT_CREATE_FAILED;
+}
+
+// A Start menu shortcut left behind by a removed copy of this app (it points to
+// an exe with our file name that no longer exists) gets merged with our AUMID
+// shortcut by Windows, and the taskbar and toasts then show a blank icon.
+// Delete such dead shortcuts. Only touches the top level of the user's
+// Start menu Programs folder and only links to a missing <our exe name>.
+void WinToast::removeDeadShortcuts() {
+    if (_shortcutPolicy != SHORTCUT_POLICY_REQUIRE_CREATE) return;
+    WCHAR dir[MAX_PATH]{L'\0'};
+    if (FAILED(Util::defaultShellLinksDirectory(dir))) return;
+    WCHAR exePath[MAX_PATH]{L'\0'};
+    if (FAILED(Util::defaultExecutablePath(exePath))) return;
+    const WCHAR* exeName = wcsrchr(exePath, L'\\');
+    exeName = exeName ? exeName + 1 : exePath;
+
+    std::vector<std::wstring> dead;
+    WIN32_FIND_DATAW fd;
+    HANDLE find = FindFirstFileW((std::wstring(dir) + L"*.lnk").c_str(), &fd);
+    if (find == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        std::wstring link = std::wstring(dir) + fd.cFileName;
+        ComPtr<IShellLinkW> shellLink;
+        if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&shellLink)))) continue;
+        ComPtr<IPersistFile> persistFile;
+        if (FAILED(shellLink.As(&persistFile))) continue;
+        if (FAILED(persistFile->Load(link.c_str(), STGM_READ))) continue;
+        WCHAR target[MAX_PATH]{L'\0'};
+        if (FAILED(shellLink->GetPath(target, MAX_PATH, nullptr, SLGP_RAWPATH)) || target[0] == L'\0') continue;
+        const WCHAR* targetName = wcsrchr(target, L'\\');
+        targetName = targetName ? targetName + 1 : target;
+        if (_wcsicmp(targetName, exeName) != 0) continue;
+        if (GetFileAttributesW(target) != INVALID_FILE_ATTRIBUTES) continue;
+        dead.push_back(link);
+    } while (FindNextFileW(find, &fd));
+    FindClose(find);
+
+    for (const auto& link : dead) {
+        DEBUG_MSG(L"Removing dead shortcut: " << link);
+        DeleteFileW(link.c_str());
+    }
 }
 
 bool WinToast::initialize(_Out_opt_ WinToastError* error) {
@@ -581,6 +626,30 @@ HRESULT	WinToast::validateShellLinkHelper(_Out_ bool& wasChanged) {
                             }
                         }
                         PropVariantClear(&appIdPropVar);
+                    }
+                }
+                // If the shortcut points to an exe that no longer exists (uninstalled
+                // copy, moved portable folder), the taskbar and toast icons come up
+                // empty, so point it at the running exe. (Keep this file ASCII: C4819.)
+                if (SUCCEEDED(hr) && _shortcutPolicy == SHORTCUT_POLICY_REQUIRE_CREATE) {
+                    ComPtr<IShellLinkW> shellLinkW;
+                    if (SUCCEEDED(shellLink.As(&shellLinkW))) {
+                        WCHAR target[MAX_PATH]{L'\0'};
+                        HRESULT targetHr = shellLinkW->GetPath(target, MAX_PATH, nullptr, SLGP_RAWPATH);
+                        if (FAILED(targetHr) || target[0] == L'\0' ||
+                            GetFileAttributesW(target) == INVALID_FILE_ATTRIBUTES) {
+                            WCHAR exePath[MAX_PATH]{L'\0'};
+                            Util::defaultExecutablePath(exePath);
+                            WCHAR exeDir[MAX_PATH]{L'\0'};
+                            wcscpy_s(exeDir, exePath);
+                            WCHAR* slash = wcsrchr(exeDir, L'\\');
+                            if (slash) *slash = L'\0';
+                            hr = shellLinkW->SetPath(exePath);
+                            if (SUCCEEDED(hr)) hr = shellLinkW->SetWorkingDirectory(exeDir);
+                            if (SUCCEEDED(hr)) hr = shellLinkW->SetIconLocation(exePath, 0);
+                            if (SUCCEEDED(hr)) hr = persistFile->Save(path, TRUE);
+                            if (SUCCEEDED(hr)) wasChanged = true;
+                        }
                     }
                 }
             }
