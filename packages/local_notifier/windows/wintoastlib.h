@@ -203,6 +203,7 @@ namespace WinToastLib {
         virtual INT64 showToast(_In_ const WinToastTemplate& toast, _In_ IWinToastHandler* handler, _Out_opt_ WinToastError* error = nullptr);
         virtual void clear();
         virtual enum ShortcutResult createShortcut();
+        void removeDeadShortcuts();
 
         const std::wstring& appName() const;
         const std::wstring& appUserModelId() const;
