@@ -192,10 +192,12 @@
   }, true);
 
   // ───── 이미지 라이브 텍스트 ─────
-  // 말풍선 이미지를 앱(Windows 내장 OCR)에 보내 글자를 읽고, 이미지 위에 투명한 글자 층을 겹친다.
+  // 확대 보기의 이미지를 앱(Windows 내장 OCR)에 보내 글자를 읽고, 이미지 위에 투명한 글자 층을 겹친다.
+  // 대화 안의 미리보기 이미지는 읽지 않는다(확대 보기에서 텍스트 인식 단추로만 쓴다).
   //   - 글자는 드래그로 선택해 복사할 수 있다
   //   - 전화번호·계좌번호 등은 파랗게 표시되고 클릭하면 복사된다
   const IMG_SELECTOR = 'mws-image img';
+  const VIEWER_IMG_SELECTOR = 'mws-lightbox mws-image img';
   const ocrCache = new Map();      // 이미지 주소 → OCR 결과 (없으면 null)
   const layers = new WeakMap();    // img → 겹쳐 놓은 층
   const queued = new WeakSet();
@@ -548,10 +550,8 @@
       img.addEventListener('load', () => considerImage(img));
     }
     if (!img.complete || !img.naturalWidth) return;
-    // 확대 보기(원본 크기)에서는 항상 읽는다. 대화 안의 작은 미리보기는 글씨가 뭉개져
-    // 잘못 읽히므로, 충분히 큰 이미지일 때만 읽는다.
-    const inViewer = !!img.closest('mws-lightbox');
-    if (!inViewer && Math.max(img.naturalWidth, img.naturalHeight) < 600) return;
+    // 확대 보기에서만 읽는다. 대화 안의 미리보기 이미지는 읽지 않는다.
+    if (!img.closest('mws-lightbox')) return;
     if (currentLayer(img)) return;
     const key = img.currentSrc || img.src;
     if (ocrCache.has(key)) {
@@ -569,8 +569,7 @@
         if (img.isConnected) considerImage(img);
         return;
       }
-      if (inViewer) ocrQueue.unshift(img); // 지금 보고 있는 이미지를 먼저
-      else ocrQueue.push(img);
+      ocrQueue.unshift(img); // 지금 보고 있는 이미지를 먼저
       pumpOcr();
     };
     settle();
@@ -585,7 +584,7 @@
 
   const scanImages = () => {
     if (!hasOcr()) return;
-    document.querySelectorAll(IMG_SELECTOR).forEach((img) => {
+    document.querySelectorAll(VIEWER_IMG_SELECTOR).forEach((img) => {
       visibility.observe(img);
       // 이미 본 이미지인데 층만 사라졌으면 바로 다시 붙인다
       const key = img.currentSrc || img.src;
