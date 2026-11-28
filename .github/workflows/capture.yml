@@ -1,0 +1,26 @@
+name: Screen capture tool
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/capture.yml'
+      - 'capture/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test
+        shell: pwsh
+        run: ./capture/build.ps1 -Test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ScreenCapture
+          path: capture/dist/ScreenCapture.exe
+          if-no-files-found: error
